@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>墨记 论文智能体</title>
+  <link rel="icon" type="image/svg+xml" href="/static/img/moji.svg">
+  <link rel="stylesheet" href="/static/css/styles.css?v=62">
+  <link rel="stylesheet" href="/static/css/layout-v18.css?v=62">
+  <link rel="stylesheet" href="/static/css/settings-v19.css?v=62">
+  <link rel="stylesheet" href="/static/css/workspace.css?v=62">
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link id="hljsDark" rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css">
+  <link id="hljsLight" rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css" disabled>
+  <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+          onload="window.__katexReady = true; document.dispatchEvent(new Event('katex-ready'));"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+</head>
+<body>
+  <div class="app-shell" id="appShell">
+
+    <!-- ============ 左：窄侧栏（ZCode 式：快捷动作 + 按项目分组的会话历史 + 底部用户区） ============ -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sb-brand">
+        <span class="sb-logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="16" height="16">
+            <path d="M16 6.2 C13.1 11.0 10.4 14.2 10.4 17.7 a5.6 5.6 0 0 0 11.2 0 C21.6 14.2 18.9 11.0 16 6.2 Z" fill="var(--accent)"/>
+            <path d="M10.8 26.2 h10.4" stroke="var(--accent)" stroke-width="1.9" stroke-linecap="round" opacity="0.8"/>
+          </svg>
+        </span>
+        <span class="sb-brand-name">墨记</span>
+      </div>
+
+      <div class="sb-actions">
+        <button class="sb-action primary" id="sbNewChat" title="新建会话（Ctrl+N）">
+          <span class="sb-ico">＋</span><span>新建会话</span><kbd>Ctrl+N</kbd>
+        </button>
+        <div class="sb-search">
+          <span class="sb-ico">🔍</span>
+          <input type="text" id="sbSearch" placeholder="搜索会话与消息" autocomplete="off">
+        </div>
+        <button class="sb-action" id="sbDrawerProjects" title="研究项目与文件树：选择项目、浏览并注入文件">
+          <span class="sb-ico">🗂</span><span>项目与文件</span>
+        </button>
+        <button class="sb-action" id="sbDrawerKb" title="知识库状态与更新">
+          <span class="sb-ico">📚</span><span>知识库</span>
+        </button>
+      </div>
+
+      <div class="sb-group-head">
+        <span>会话</span>
+        <span class="sb-group-sub" id="sbGroupSub">全部</span>
+      </div>
+      <div class="sb-list" id="sessionList"></div>
+
+      <div class="sb-foot">
+        <span class="auth-chip" id="authChip"></span>
+        <button type="button" class="sb-gear" id="btnSettings" title="设置：模型选择 / 温度 / tokens 等运行配置">⚙</button>
+      </div>
+    </aside>
+
+    <!-- ============ 右：主区（顶栏面包屑 + 对话/论文双 Tab + 输入舱 + 任务面板） ============ -->
+    <main class="main">
+      <div class="main-topbar">
+        <span class="logo"><button type="button" class="logo-mark" id="btnToggleLeft" aria-label="折叠或展开最左侧窗口">
+          <svg class="logo-ink" viewBox="0 0 32 32" width="15" height="15" aria-hidden="true">
+            <path d="M16 6.2 C13.1 11.0 10.4 14.2 10.4 17.7 a5.6 5.6 0 0 0 11.2 0 C21.6 14.2 18.9 11.0 16 6.2 Z" fill="#fff"/>
+            <ellipse cx="13.5" cy="17.0" rx="1.5" ry="2.1" fill="var(--accent)" opacity="0.32" transform="rotate(-20 13.5 17.0)"/>
+            <path d="M10.8 26.2 h10.4" stroke="#fff" stroke-width="1.9" stroke-linecap="round" opacity="0.8"/>
+          </svg>
+          <svg class="logo-side" viewBox="0 0 32 32" width="15" height="15" aria-hidden="true">
+            <rect x="4.5" y="5.5" width="23" height="21" rx="3.5" fill="none" stroke="#fff" stroke-width="2.1"/>
+            <path d="M8 5.5 h3.4 v21 H8 a3.5 3.5 0 0 1-3.5-3.5 V9 A3.5 3.5 0 0 1 8 5.5 Z" fill="#fff"/>
+          </svg>
+          <span class="logo-tip"><span class="tt-hide">折叠最左侧窗口</span><span class="tt-show">展开最左侧窗口</span></span>
+        </button>墨记 论文智能体</span>
+        <button type="button" class="topbar-hamburger" id="btnSbHamburger" aria-label="展开侧栏">☰</button>
+        <div class="mview-switch" role="tablist" aria-label="窄屏视图切换">
+          <button type="button" data-mview="chat" class="active">💬 对话</button>
+          <button type="button" data-mview="paper">📄 论文</button>
+        </div>
+        <span class="crumb" id="crumbProject" title="当前研究项目">未选择项目</span>
+        <span class="crumb-sep">/</span>
+        <span class="crumb crumb-dim" id="crumbPaper">新会话</span>
+        <span class="spacer"></span>
+        <span class="ft-top" id="ftTopBadge" style="display:none;" title="全文生成任务进行中：点击打开论文页查看进度">🚀 全文 0/0</span>
+        <span class="status" id="sysStatus">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText">连接中…</span>
+        </span>
+      </div>
+
+      <div class="main-body dual">
+        <!-- ===== 左：对话（与论文并存） ===== -->
+        <section class="dual-chat" id="chatPane">
+          <div class="chat-area" id="chatArea"></div>
+          <div class="attach-bar" id="attachBar"></div>
+          <div class="composer">
+            <div id="chatInput" class="chat-input" contenteditable="true"
+                 data-placeholder="继续输入，或让助手基于已注入文件讨论…"></div>
+            <div class="composer-bar">
+              <button class="btn-mini" id="btnClearSession" title="清空当前会话的全部消息与附件">🧹 清空</button>
+              <span class="composer-hint" id="composerHint">Enter 换行 · Ctrl+Enter 发送</span>
+              <span class="spacer"></span>
+              <span class="composer-chip" id="composerModel" title="当前写作模型">GLM</span>
+              <button class="send" id="btnSend" title="发送">发送</button>
+            </div>
+          </div>
+        </section>
+
+        <div class="dual-split" id="dualSplit" title="拖动调整宽度 · 双击复位"></div>
+
+        <!-- ===== 右：论文工作区（[论文|大纲] 标签 + 头部操作 + 滑出配置面板） ===== -->
+        <section class="dual-paper" id="paperPane">
+          <div class="ws-col">
+            <div class="ws-head">
+              <div class="ws-tabs" role="tablist">
+                <button class="ws-tab active" data-ws="paper" role="tab" title="论文正文（实时流式展示）">📄 论文</button>
+                <button class="ws-tab" data-ws="outline" role="tab" title="大纲章节卡片：逐节生成 / 润色 / 去AI味 / 注入会话">🗂 大纲</button>
+              </div>
+              <div class="ws-actions">
+                <button class="btn primary ws-btn-run" id="btnFullText" title="逐节生成全部章节，每节完成后自动体检并按阈值去AI味">🚀 一键生成全文</button>
+                <button class="btn ws-btn" id="btnToolsMenu" title="写作工具">🔧 工具 <span class="ws-caret">▾</span></button>
+                <button class="btn ws-btn" id="btnExportMenu" title="导出论文">📤 导出 <span class="ws-caret">▾</span></button>
+                <button class="ws-cfg-btn" id="btnCfg" title="论文配置：字数 / 模板 / 参考论文 / 项目理解 / 生成大纲">⚙<span class="ws-cfg-txt"> 配置</span></button>
+              </div>
+            </div>
+
+            <!-- 全文生成进度条（固定在工作区头部下方，不占内容滚动区） -->
+            <div class="ft-strip" id="fulltextStrip" style="display:none;">
+              <div class="ft-head">
+                <span class="ft-pulse" id="ftPulse"></span>
+                <span class="ft-state-badge running" id="ftState">生成中</span>
+                <span class="ft-count" id="ftCount">0/0 节</span>
+                <span class="ft-words" id="ftWords">0 字</span>
+                <button class="btn-mini" id="ftCancel">■ 取消</button>
+              </div>
+              <div class="ft-bar"><div class="ft-bar-fill" id="ftBarFill"></div></div>
+              <div class="ft-secs" id="ftDots"></div>
+              <div class="ft-now" id="ftNow"></div>
+              <div class="ft-log" id="ftLog"></div>
+            </div>
+
+            <div class="ws-body">
+              <!-- 论文视图（正文 / 准备向导） + 文件预览 -->
+              <div class="ws-view active" data-ws-view="paper">
+                <div class="paper-main">
+                  <div class="preview-pane" id="previewPane" style="display:none;">
+                    <div class="pv-tabs">
+                      <span class="pv-tab active">
+                        <span class="pv-icon" id="pvIcon">📄</span>
+                        <span class="pv-name" id="pvName"></span>
+                        <button type="button" class="pv-close" id="pvClose" title="关闭预览" aria-label="关闭文件预览">✕</button>
+                      </span>
+                    </div>
+                    <div class="pv-breadcrumb" id="pvBreadcrumb"></div>
+                    <div class="pv-notice" id="pvNotice" style="display:none;"></div>
+                    <div class="pv-code" id="pvCode">
+                      <div class="code-gutter" id="pvGutter"></div>
+                      <pre class="code-body"><code id="pvCodeBody" class="hljs"></code></pre>
+                    </div>
+                  </div>
+                  <div class="paper-view" id="paperView"></div>
+                </div>
+              </div>
+              <!-- 大纲视图（章节卡片 + 自查报告） -->
+              <div class="ws-view" data-ws-view="outline">
+                <div class="outline-area-wrap" id="outlineArea"></div>
+                <div id="reviewSlot"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 配置滑出面板（右缘滑入，流程性内容：四步准备 + 进度清单） -->
+          <div class="cfg-scrim" id="cfgScrim"></div>
+          <aside class="cfg-panel" id="taskPanel" aria-label="论文配置面板">
+            <div class="cap-head">
+              <span class="cap-title">🧭 论文配置</span>
+              <button class="btn-mini" id="cfgClose" title="收起配置面板（Esc 也可关闭）" aria-label="收起论文配置面板">✕</button>
+            </div>
+            <div class="taskpanel-scroll">
+              <div class="step-label"><span class="step-no">1</span>论文设置</div>
+              <div class="row">
+                <div class="stepper" title="总目标字数（3万~8万，步长5000）：各节按比例自动分配，摘要/结论封顶；长节自动拆分续写保证写满">
+                  <button type="button" id="wordsMinus" tabindex="-1">−</button>
+                  <input type="number" id="totalWords" min="30000" max="80000" step="5000" value="30000">
+                  <span class="unit">字</span>
+                  <button type="button" id="wordsPlus" tabindex="-1">＋</button>
+                </div>
+              </div>
+              <div class="row">
+                <select id="templateSelect" title="论文结构模板：各节名称与字数比例（如 IMRAD 或 引言-相关工作-方法-实验）"
+                        style="flex:1;"></select>
+                <select id="domainSelect" title="论文领域：决定写作人设/语言规范/章节模板/自查清单（自动检测=按项目画像判定）"
+                        style="flex:1;"></select>
+              </div>
+
+              <div class="step-label"><span class="step-no">2</span>模板论文<span class="step-opt">可选</span></div>
+              <div class="row">
+                <button class="btn" id="btnUploadRef" style="flex:0 0 118px;" title="上传他人发表论文(pdf/docx/txt)，解析章节结构供大纲借鉴；上传后自动提取格式模板与写作骨架">📎 参考论文</button>
+                <select id="refSelect" title="选择生成大纲时借鉴结构的参考论文（不选则按标准IMRAD模板）">
+                  <option value="">不使用参考论文</option>
+                </select>
+                <input type="file" id="refFileInput" accept=".pdf,.docx,.txt" style="display:none;">
+              </div>
+              <div id="tplPanel" class="tpl-card" style="display:none;">
+                <div class="tpl-head"><span class="tpl-head-icon">📋</span><span>模板论文档案</span></div>
+                <div class="tpl-title-name" id="tplName"></div>
+                <div class="tpl-row" id="tplFormatRow">
+                  <div class="tpl-row-line1">
+                    <span class="tpl-item-name">🎨 格式模板</span>
+                    <span class="tpl-chip" id="tplFormatBadge">–</span>
+                  </div>
+                  <div class="tpl-actions">
+                    <button class="btn-mini" id="btnTplPreview" title="查看提取到的排版参数（字体/字号/行距/图表/页面/页眉页脚）">参数</button>
+                    <button class="btn-mini primary tpl-main-btn" id="btnTplApply" title="把模板排版编译为本项目导出样式：导出 docx/pdf 自动生效（白名单制，参考文献格式等合规项不跟随）">一键套入排版</button>
+                  </div>
+                </div>
+                <div class="tpl-row" id="tplSkeletonRow">
+                  <div class="tpl-row-line1">
+                    <span class="tpl-item-name">🦴 写作骨架</span>
+                    <span class="tpl-chip" id="tplSkeletonBadge">未提取</span>
+                  </div>
+                  <div class="tpl-actions">
+                    <button class="btn-mini" id="btnSkelPreview" title="查看体裁/叙事弧/各槽位修辞移动/跨章承接关系">骨架</button>
+                    <button class="btn-mini tpl-main-btn" id="btnSkelExtract" title="（重新）提取写作骨架：上传后自动执行，失败或需要刷新时手动触发" style="display:none;">提取骨架</button>
+                  </div>
+                </div>
+                <div class="tpl-applied-bar" id="tplAppliedBar">
+                  <span class="tpl-applied-text" id="tplHint">未套入 · 导出使用系统默认排版</span>
+                  <button class="btn-mini tpl-undo" id="btnTplIgnore" title="撤销已套入的模板排版，回到系统默认（不影响大纲与正文）" disabled>撤销</button>
+                </div>
+              </div>
+
+              <div class="step-label"><span class="step-no">3</span>项目理解</div>
+              <div class="row">
+                <button class="btn" id="btnUnderstand" title="项目理解 Agent：通读项目→理清研究顺序/核心脚本→弹窗确认模糊处→生成《研究项目主体》（注入所有写作任务）">🧠 理解项目</button>
+                <button class="btn" id="btnEnrichProfile" style="flex:1;" title="重扫项目（含 results/output 结果文件）+ 视觉模型逐图看图写描述，作为大纲/正文生成的证据地基。生成前先跑一次">🔬 深化画像</button>
+              </div>
+
+              <div class="step-label"><span class="step-no">4</span>生成大纲</div>
+              <div class="row">
+                <button class="btn primary" id="btnGenerateOutline" style="flex:1;">✨ 生成大纲</button>
+              </div>
+
+              <!-- 进度清单（ZCode 进程 0/5 式） -->
+              <div class="task-progress" id="taskProgress" style="display:none;">
+                <div class="tp-head">
+                  <span>进度</span>
+                  <span class="tp-count" id="taskProgressCount">0/0</span>
+                </div>
+                <div class="tp-list" id="taskProgressList"></div>
+              </div>
+
+              <div class="outline-progress"><div class="fill" id="progressFill"></div></div>
+              <div class="words-total" id="wordsSummary">未生成大纲</div>
+            </div>
+          </aside>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- ============ 抽屉：项目与文件（从侧栏唤出） ============ -->
+  <div class="drawer-scrim" id="drawerScrim" style="display:none;"></div>
+  <div class="sb-scrim" id="sbScrim"></div>
+  <div class="drawer" id="drawerProjects" style="display:none;">
+    <div class="drawer-head">
+      <span>项目与文件</span>
+      <span>
+        <span class="act" id="btnSetRoot" title="新建/切换工作区：选择新的根目录，会话与生成物自动跟随">＋ 新建工作区</span>
+        <span class="act" id="btnRefreshProjects">刷新</span>
+        <button class="btn-mini" data-drawer-close aria-label="关闭抽屉">✕</button>
+      </span>
+    </div>
+    <div class="drawer-body">
+      <div class="drawer-label">研究项目</div>
+      <div id="projectList"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+      <div class="drawer-label" style="margin-top:14px;">文件树 <span style="color:var(--text-dim);font-weight:400;font-size:11px;">拖拽 / 右键添加到会话</span></div>
+      <div class="file-tree" id="fileTree">
+        <div class="empty-hint">先选择一个项目</div>
+      </div>
+    </div>
+  </div>
+  <div class="drawer" id="drawerKb" style="display:none;">
+    <div class="drawer-head">
+      <span>知识库</span>
+      <span><span class="act" id="btnKbStatus">状态</span><button class="btn-mini" data-drawer-close style="margin-left:8px;">✕</button></span>
+    </div>
+    <div class="drawer-body">
+      <div class="kb-row">
+        <span class="kb-name">方法原论文</span>
+        <span class="kb-count" id="kbMethods">-</span>
+        <button class="btn-mini" id="btnBuildMethods" title="知识库已持久化，启动自动加载，平时无需点击。仅在注册表新增方法/文献后需要更新时使用">更新</button>
+      </div>
+      <div class="kb-row">
+        <span class="kb-name">写作教学库</span>
+        <span class="kb-count" id="kbWriting">-</span>
+        <button class="btn-mini" id="btnBuildWriting" title="知识库已持久化，启动自动加载，平时无需点击。仅在补充新教材/B站字幕时使用">更新</button>
+      </div>
+      <div class="kb-row">
+        <span class="kb-name">多模态文献库</span>
+        <span class="kb-count" id="kbRagDocs">-</span>
+        <button class="btn-mini" id="btnBuildRag" title="RAG-Anything：把 reference_papers 下全部 PDF 的图/表/公式解析入多模态知识图谱。上传参考文献时已自动入库，此按钮用于手动批量/补齐">更新</button>
+      </div>
+      <div class="kb-hint">✓ 已持久化保存，重启自动加载，无需重复构建</div>
+    </div>
+  </div>
+
+  <!-- 右键菜单 -->
+  <div class="context-menu" id="contextMenu">
+    <div class="item" id="ctxAddToSession">➕ 添加到当前会话（插入光标处）</div>
+    <div class="item" id="ctxAddDir" style="display:none;">📁 添加文件夹引用</div>
+    <div class="item" id="ctxPreviewFile">👁 预览文件内容</div>
+    <div class="item" id="ctxPreviewImage" style="display:none;">🖼 预览图片</div>
+  </div>
+
+  <!-- 图片预览弹窗 -->
+  <div class="img-modal" id="imgModal">
+    <div class="img-modal-bar">
+      <span id="imgModalTitle">图片预览</span>
+      <span>
+        <button class="btn-mini" id="imgModalOpen">新窗口打开</button>
+        <button class="btn-mini" id="imgModalClose" aria-label="关闭图片预览">✕ 关闭</button>
+      </span>
+    </div>
+    <div class="img-modal-body"><img id="imgModalImg" src="" alt=""></div>
+  </div>
+
+  <!-- 全文生成分发菜单 -->
+  <div class="full-menu" id="fullMenu">
+    <div class="fm-head">🚀 一键生成全文<span class="fm-head-sub">逐节写作 · 每节完成自动体检并按阈值去AI味</span></div>
+    <div class="fm-item" data-force="0" id="fullMenuPending" title="跳过已成稿章节，从第一个未完成节续写，已写正文原样保留">
+      <span class="fm-ico">▶</span>
+      <div class="fm-txt">
+        <div class="fm-main">生成未完成节</div>
+        <div class="fm-sub">断点续写，不动已成稿内容</div>
+      </div>
+      <span class="fm-count" id="fullMenuPendingCount">0/0</span>
+    </div>
+    <div class="fm-item fm-danger" data-force="1" id="fullMenuForce" title="全部章节重新生成，会覆盖已完成的正文">
+      <span class="fm-ico">🔁</span>
+      <div class="fm-txt">
+        <div class="fm-main">强制重做全部</div>
+        <div class="fm-sub">覆盖重写，含已完成章节</div>
+      </div>
+      <span class="fm-count" id="fullMenuForceCount">0</span>
+    </div>
+  </div>
+
+  <!-- 图片整理工作台 -->
+  <div class="img-modal" id="figWorkshop">
+    <div class="img-modal-bar">
+      <span id="fwTitle">🖼 图片整理工作台</span>
+      <span>
+        <span class="fw-progress" id="fwProgress"></span>
+        <button class="btn-mini" id="fwClose" aria-label="关闭图片整理工作台">✕ 关闭</button>
+      </span>
+    </div>
+    <div class="fw-list" id="fwList"></div>
+  </div>
+
+  <!-- 强度选择菜单（润色/去AI味） -->
+  <div class="context-menu" id="strengthMenu">
+    <div class="item" data-strength="light">🪶 轻度 · 只改问题句</div>
+    <div class="item" data-strength="standard">⚖ 标准 · 句子级重写（推荐）</div>
+    <div class="item" data-strength="deep">🛠 深度 · 句段重组</div>
+  </div>
+
+  <!-- 排版设置菜单（预览即时生效 + 导出 Word 按此排版） -->
+  <div class="context-menu style-menu" id="styleMenu">
+    <div class="sm-title">📐 排版设置 <span>预览即时生效 · 导出 Word 按此排版</span></div>
+    <div class="sm-row"><label>正文字号</label>
+      <select data-pstyle="body_font_px">
+        <option value="14">14px</option><option value="15">15px</option>
+        <option value="16">16px</option><option value="17">17px</option>
+        <option value="18">18px</option>
+      </select></div>
+    <div class="sm-row"><label>行距</label>
+      <select data-pstyle="line_height">
+        <option value="1.5">1.5</option><option value="1.8">1.8</option>
+        <option value="2.05">2.05</option><option value="2.2">2.2</option>
+      </select></div>
+    <div class="sm-row"><label>首行缩进</label>
+      <select data-pstyle="first_indent_em">
+        <option value="2">缩进 2 字符</option><option value="0">不缩进</option>
+      </select></div>
+    <div class="sm-row"><label>正文对齐</label>
+      <select data-pstyle="body_align">
+        <option value="justify">两端对齐</option><option value="left">左对齐</option>
+      </select></div>
+    <div class="sm-row"><label>表格位置</label>
+      <select data-pstyle="table_align">
+        <option value="center">居中</option><option value="left">左对齐</option>
+      </select></div>
+    <div class="sm-row"><label>表格宽度</label>
+      <select data-pstyle="table_width">
+        <option value="full">撑满版心</option><option value="auto">适应内容</option>
+      </select></div>
+    <div class="sm-row"><label>表格字号</label>
+      <select data-pstyle="table_font_px">
+        <option value="12">12px</option><option value="13">13px</option>
+        <option value="14">14px</option><option value="15">15px</option>
+      </select></div>
+    <div class="sm-row"><label>表格文字</label>
+      <select data-pstyle="cell_align">
+        <option value="center">居中</option><option value="left">左对齐</option>
+      </select></div>
+    <div class="sm-row"><label>图片宽度</label>
+      <select data-pstyle="fig_width_pct">
+        <option value="50">50%</option><option value="65">65%</option>
+        <option value="80">80%</option><option value="100">100%</option>
+      </select></div>
+  </div>
+
+  <!-- 文件夹选择器（工作区） -->
+  <div class="fp-overlay" id="fpOverlay">
+    <div class="fp-dialog">
+      <div class="fp-head">
+        <span>选择工作区文件夹</span>
+        <button class="btn-mini" id="fpClose" aria-label="关闭文件夹选择器">✕</button>
+      </div>
+      <div class="fp-pathbar">
+        <button class="btn-mini" id="fpUp" title="上级目录">↑</button>
+        <input type="text" id="fpPathInput" class="fp-input" spellcheck="false"
+               placeholder="输入完整路径后回车，或逐级浏览">
+        <button class="btn-mini" id="fpGo">跳转</button>
+      </div>
+      <div class="fp-list" id="fpList">
+        <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+      </div>
+      <div class="fp-foot">
+        <span class="fp-hint" id="fpHint"></span>
+        <button class="btn-mini" id="fpCancel">取消</button>
+        <button class="btn-mini primary" id="fpChoose">选择当前目录</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 划词悬浮标识（论文区选中文字时出现） -->
+  <div class="sel-pop" id="selPop">➕ 添加到会话</div>
+  <div class="toast-wrap" id="toastWrap"></div>
+
+  <!-- ============ 整页设置（ZCode 式：左导航 + 右卡片行） ============ -->
+  <div class="settings-page" id="settingsPage">
+    <aside class="sp-nav">
+      <button class="sp-back" id="spBack">
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 3 L5 8 l5 5"/></svg>
+        返回工作区
+      </button>
+      <div class="sp-group">基础设置</div>
+      <button class="sp-nav-item active" data-sp="general"><span class="sp-nav-ico">⚙</span>常规</button>
+      <button class="sp-nav-item" data-sp="appearance"><span class="sp-nav-ico">🎨</span>外观</button>
+      <button class="sp-nav-item" data-sp="code"><span class="sp-nav-ico">▢</span>代码设置</button>
+      <button class="sp-nav-item" data-sp="model"><span class="sp-nav-ico">◈</span>模型设置</button>
+      <button class="sp-nav-item" data-sp="keys"><span class="sp-nav-ico">⌨</span>键盘快捷键</button>
+      <div class="sp-group">外部服务</div>
+      <button class="sp-nav-item" data-sp="model"><span class="sp-nav-ico">🛡</span>AI 检测（朱雀）</button>
+    </aside>
+    <div class="sp-content" id="spContent">
+      <div class="sp-scroll">
+
+        <section class="sp-section active" data-sp="general">
+          <h2 class="sp-h1">常规</h2>
+          <div class="set-card">
+            <div class="sp-row">
+              <div class="sp-txt"><div class="sp-label">工作区根目录</div>
+                <div class="sp-desc">研究项目的扫描位置，会话与生成物随工作区保存；更换后自动重新扫描</div></div>
+              <div class="sp-ctl"><span class="sp-path" id="spWorkspace">未设置</span>
+                <button class="btn-mini" id="spChangeRoot">更换</button></div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-txt"><div class="sp-label">多用户权限</div>
+                <div class="sp-desc">创建管理员账号后启用 RBAC：用户仅可访问自己的项目/文档/会话</div></div>
+              <div class="sp-ctl"><span id="spAuthState" class="sp-chip">单用户模式</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="sp-section" data-sp="appearance">
+          <h2 class="sp-h1">外观</h2>
+          <div class="sp-h2">界面设置</div>
+          <div class="sp-h2sub">设置应用主题与界面文字大小。</div>
+          <div class="set-card">
+            <div class="sp-row">
+              <div class="sp-txt"><div class="sp-label">界面主题</div>
+                <div class="sp-desc">选择深色或浅色主题。</div></div>
+              <div class="sp-ctl">
+                <select id="spTheme" class="sp-select">
+                  <option value="dark">深色</option>
+                  <option value="light">浅色</option>
+                  <option value="paper">纸张模拟</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-txt"><div class="sp-label">界面字号</div>
+                <div class="sp-desc">调整应用界面的文字大小，图标和布局尺寸不受影响。</div></div>
+              <div class="sp-ctl sp-num"><input type="number" id="spUiFont" min="12" max="18" step="1" value="14"><span class="sp-unit">px</span></div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-txt"><div class="sp-label">发送键</div>
+                <div class="sp-desc">聊天消息的发送按键；另一组合（Shift+Enter）插入换行。中文输入习惯推荐 Enter 发送。</div></div>
+              <div class="sp-ctl">
+                <select id="spSendKey" class="sp-select">
+                  <option value="ctrl-enter">Ctrl + Enter 发送</option>
+                  <option value="enter">Enter 发送（Shift+Enter 换行）</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="sp-section" data-sp="code">
+          <h2 class="sp-h1">代码设置</h2>
+          <div class="sp-h2">显示与字号</div>
+          <div class="sp-h2sub">设置代码内容的显示方式，不受界面字号影响。</div>
+          <div class="set-card">
+            <div class="sp-row">
+              <div class="sp-txt"><div class="sp-label">显示行号</div>
+                <div class="sp-desc">在代码文件预览中显示行号。</div></div>
+              <div class="sp-ctl"><label class="switch"><input type="checkbox" id="spLineNums" checked><span class="slider"></span></label></div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-txt"><div class="sp-label">代码字号</div>
+                <div class="sp-desc">调整代码块、文件预览的默认字号。</div></div>
+              <div class="sp-ctl sp-num"><input type="number" id="spCodeFont" min="10" max="16" step="0.5" value="12.5"><span class="sp-unit">px</span></div>
+            </div>
+          </div>
+          <div class="sp-h2">代码预览</div>
+          <div class="sp-h2sub">当前设置在文件预览中即时生效。</div>
+          <div class="set-card sp-codeprev">
+            <div class="sp-code-head"><span>预览</span><span class="sp-chip">实时生效</span></div>
+            <div class="pv-code" id="spPreviewCode" style="display:flex;">
+              <div class="code-gutter">1<br>2<br>3<br>4</div>
+              <pre class="code-body"><code class="hljs" style="background:transparent;">const theme = {
+  surface: "sidebar",
+  accent: "var(--accent)",
+  contrast: 45,
+};</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="sp-section" data-sp="model">
+          <h2 class="sp-h1">模型设置</h2>
+          <div class="sp-h2sub">管理写作/理解/视觉模型与生成参数 · 保存即写入 config.yaml 并热生效（无需重启）</div>
+          <div class="set-card">
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">主写作模型</div>
+              <div class="sp-desc">大纲 / 正文 / 自查等重任务（智谱 Coding Plan 通道）</div></div>
+              <div class="sp-ctl"><select data-set="llm" class="sp-select" style="width:230px;"></select></div></div>
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">项目理解模型</div>
+              <div class="sp-desc">「🧠 理解项目」Agent 的扫描分析与《研究项目主体》合成</div></div>
+              <div class="sp-ctl"><select data-set="analyst_llm" class="sp-select" style="width:230px;"></select></div></div>
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">视觉模型</div>
+              <div class="sp-desc">图片分析与多模态文献解析（5.3 系列中原生多模态）</div></div>
+              <div class="sp-ctl"><select data-set="vision_model" class="sp-select" style="width:230px;"></select></div></div>
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">本地小模型</div>
+              <div class="sp-desc">Ollama 本地模型：意图路由 / 查询改写（保存后需重启服务生效）</div></div>
+              <div class="sp-ctl"><input type="text" data-set="small_llm" class="sp-input" style="width:230px;" placeholder="Ollama 模型名"></div></div>
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">嵌入模型</div>
+              <div class="sp-desc">只读：切换嵌入需重建知识库，如需修改请在 config.yaml 中变更</div></div>
+              <div class="sp-ctl"><input type="text" data-set="embedding" class="sp-input" style="width:230px;" disabled></div></div>
+          </div>
+          <div class="sp-h2">生成参数</div>
+          <div class="set-card">
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">温度</div>
+              <div class="sp-desc">学术写作建议 0.3 ~ 0.5（低温保稳定）</div></div>
+              <div class="sp-ctl sp-num"><input type="number" data-set="temperature" min="0" max="1" step="0.05" class="sp-input" style="width:110px;"></div></div>
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">最大 tokens</div>
+              <div class="sp-desc">单次响应上限；大纲 / 长文生成建议 ≥ 8192</div></div>
+              <div class="sp-ctl sp-num"><input type="number" data-set="max_tokens" min="4096" max="65536" step="1024" class="sp-input" style="width:110px;"></div></div>
+          </div>
+          <div class="sp-h2">AI 检测（朱雀）</div>
+          <div class="set-card">
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">朱雀 API Key</div>
+              <div class="sp-desc" id="settingsZhuqueHint">腾讯朱雀 AI 检测（AI 检测中心使用）· 月免费 50 万 token · 保存后立即生效</div></div>
+              <div class="sp-ctl"><input type="password" data-set="zhuque_key" id="settingsZhuqueKey" class="sp-input" style="width:230px;" placeholder="留空=不修改" autocomplete="off"></div></div>
+          </div>
+          <div class="sp-actions">
+            <span class="uw-foot-note">主模型 / 温度等保存后立即应用于后续生成任务</span>
+            <button class="btn-mini" id="settingsCancel">取消</button>
+            <button class="btn-mini primary" id="settingsSave">保存并生效</button>
+          </div>
+        </section>
+
+        <section class="sp-section" data-sp="keys">
+          <h2 class="sp-h1">键盘快捷键</h2>
+          <div class="set-card">
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">新建会话</div></div><div class="sp-ctl"><kbd class="sp-kbd">Ctrl + N</kbd></div></div>
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">发送消息</div></div><div class="sp-ctl"><kbd class="sp-kbd">Ctrl + Enter</kbd></div></div>
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">关闭抽屉/弹层</div></div><div class="sp-ctl"><kbd class="sp-kbd">Esc</kbd></div></div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- 认证遮罩（多用户 RBAC） -->
+  <div class="auth-overlay" id="authOverlay">
+    <div class="auth-card">
+      <div class="auth-logo">墨记 · 论文智能体</div>
+      <div class="auth-box" id="authLoginBox">
+        <div class="auth-title">登录</div>
+        <input type="text" id="loginUser" placeholder="用户名" autocomplete="username">
+        <input type="password" id="loginPass" placeholder="密码" autocomplete="current-password">
+        <button class="btn primary" id="btnLoginSubmit">登 录</button>
+        <div class="auth-switch">没有账号？<a href="javascript:void(0)" id="authToReg">注册</a></div>
+      </div>
+      <div class="auth-box" id="authRegBox" style="display:none;">
+        <div class="auth-title">注册账号</div>
+        <div class="auth-hint">第一个注册的账号自动成为管理员，并接管现有数据</div>
+        <input type="text" id="regUser" placeholder="用户名（3-32位字母/数字/下划线/中文）" autocomplete="username">
+        <input type="password" id="regPass" placeholder="密码（至少6位）" autocomplete="new-password">
+        <button class="btn primary" id="btnRegSubmit">创 建 账 号</button>
+        <div class="auth-switch">已有账号？<a href="javascript:void(0)" id="authToLogin">去登录</a></div>
+      </div>
+      <div class="auth-msg" id="authMsg"></div>
+    </div>
+  </div>
+
+  <!-- 管理员用户面板 -->
+  <div class="admin-overlay" id="adminModal">
+    <div class="admin-card">
+      <div class="admin-head">
+        <span>👥 用户管理（RBAC）</span>
+        <button class="btn sm" id="adminModalClose">关闭</button>
+      </div>
+      <div class="admin-new">
+        <input type="text" id="adminNewUser" placeholder="新用户名">
+        <input type="password" id="adminNewPass" placeholder="密码（至少6位）">
+        <select id="adminNewRole"><option value="user">用户</option><option value="admin">管理员</option></select>
+        <button class="btn primary sm" id="btnAdminCreate">创建</button>
+      </div>
+      <div class="admin-list" id="adminUserList"></div>
+      <div class="admin-foot">角色说明：管理员=全部权限+用户管理+系统设置；用户=仅访问自己的项目/文档/会话</div>
+    </div>
+  </div>
+
+  <script src="/static/js/ui.js?v=62"></script>
+  <script src="/static/js/app.js?v=62"></script>
+</body>
+</html>

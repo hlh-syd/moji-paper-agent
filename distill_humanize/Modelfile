@@ -1,0 +1,1 @@
+FROM ./humanize-9b-final.gguf

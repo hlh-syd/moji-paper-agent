@@ -1,0 +1,56 @@
+# Core dependencies
+# 注意：langchain 各子包版本并不随主包联动；已迁移到 langchain-core 1.x
+# （raganything/lightrag 依赖链要求）。langchain 主包与 community 已不再使用（代码零引用）。
+langchain-core>=1.0,<2
+langchain-chroma>=0.2.6   # 桥接 langchain-core 与 chromadb 1.x
+langchain-openai>=1.6     # 智谱 OpenAI 兼容主通道（GLM-5.3 / GLM-5.3-Flash）
+langchain-ollama>=1.1     # 本地模型/嵌入（批量 /api/embed 接口，比 community 版快一个量级）
+langchain-text-splitters>=0.3
+chromadb>=1.0.20
+ollama>=0.5.0
+openai>=2.54,<3           # lightrag-hku 1.4.x 上限约束
+
+# RAG-Anything 多模态文献引擎（自动带入 lightrag-hku）
+# 必须用 mineru 3.4.x（raganything 1.4.1 以子进程调用 2.x/3.x 风格 CLI；4.x CLI 不兼容）
+# CUDA 加速需先：pip install torch --index-url https://download.pytorch.org/whl/cu126
+raganything>=1.4.1
+"mineru[core]>=3.4.1,<4"
+
+# 论文智能体：文献抓取与导出
+pypdf>=4.0.0
+python-docx>=1.1.0
+pdfplumber>=0.11  # 模板论文 PDF 格式档案提取（通道A）
+yt-dlp>=2025.1.1  # B站字幕抓取
+latex2mathml>=3.7  # LaTeX 公式→Word 原生公式（后备导出链）
+mathml2omml>=0.0.2
+
+# Web framework
+fastapi>=0.115
+uvicorn[standard]>=0.29
+websockets>=13.0
+
+# Data models and configuration
+pydantic>=2.6.4,<3
+pyyaml>=6.0
+python-dotenv>=1.0.1
+
+# Async and networking
+aiohttp>=3.9
+aiofiles>=24.1
+httpx>=0.27
+
+# Document processing
+beautifulsoup4>=4.12
+markdown>=3.6
+
+# Web templates
+jinja2>=3.1
+python-multipart>=0.0.9
+
+# Utilities
+requests>=2.31
+numpy>=1.26
+pandas>=2.2
+
+# API Documentation extras
+pygments>=2.17

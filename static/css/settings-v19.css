@@ -1,0 +1,124 @@
+/* ============================================================
+   v19 · 整页设置（ZCode 式：左导航 + 右卡片行 + 开关/代码预览）
+   ============================================================ */
+.settings-page {
+  position: fixed; inset: 0; z-index: 950; display: none;
+  background: var(--bg);
+}
+.settings-page.open { display: flex; }
+
+/* 左导航 */
+.sp-nav {
+  width: 232px; flex: 0 0 232px; padding: 18px 12px;
+  border-right: 1px solid var(--border); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.sp-back {
+  display: flex; align-items: center; gap: 8px;
+  border: none; background: transparent; color: var(--text-dim);
+  font-size: 13px; cursor: pointer; padding: 8px 10px; border-radius: var(--radius-s);
+  margin-bottom: 14px; transition: background var(--dur-fast), color var(--dur-fast);
+}
+.sp-back:hover { background: var(--bg-hover); color: var(--text); }
+.sp-group {
+  font-size: 11px; color: var(--text-faint); letter-spacing: 1px;
+  padding: 14px 10px 6px; text-transform: uppercase;
+}
+.sp-nav-item {
+  display: flex; align-items: center; gap: 9px;
+  border: none; background: transparent; color: var(--text);
+  font-size: 13px; text-align: left; cursor: pointer;
+  padding: 9px 12px; border-radius: var(--radius-s);
+  transition: background var(--dur-fast) var(--ease);
+}
+.sp-nav-item:hover { background: var(--bg-hover); }
+.sp-nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.sp-nav-ico { width: 18px; text-align: center; opacity: 0.85; }
+
+/* 右内容 */
+.sp-content { flex: 1; overflow-y: auto; }
+.sp-scroll { max-width: 860px; margin: 0 auto; padding: 34px 36px 60px; }
+.sp-h1 { font-size: 22px; font-weight: 700; margin: 6px 0 18px; letter-spacing: 0.5px; }
+.sp-h2 { font-size: 15px; font-weight: 700; margin: 26px 0 4px; }
+.sp-h2sub { font-size: 12.5px; color: var(--text-dim); margin-bottom: 12px; }
+
+/* 卡片（行式：左标签/描述，右控件） */
+.set-card {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius-l); overflow: hidden;
+  box-shadow: var(--shadow-1);
+}
+.sp-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px;
+  padding: 15px 20px;
+}
+.sp-row + .sp-row { border-top: 1px solid var(--wash-1); }
+.sp-txt { min-width: 0; }
+.sp-label { font-size: 13.5px; font-weight: 600; }
+.sp-desc { font-size: 12px; color: var(--text-dim); margin-top: 3px; line-height: 1.5; }
+.sp-ctl { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.sp-select, .sp-input {
+  padding: 7px 11px; border-radius: var(--radius-s); font-size: 13px;
+  border: 1px solid var(--wash-3); background: var(--bg-elev); color: var(--text);
+  outline: none; transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+.sp-select:focus, .sp-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+.sp-num input { width: 76px; text-align: right; }
+.sp-unit { font-size: 12px; color: var(--text-faint); }
+.sp-path {
+  font-size: 12px; color: var(--text-dim); max-width: 340px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl;
+}
+.sp-chip {
+  font-size: 11px; color: var(--text-dim);
+  border: 1px solid var(--wash-2); border-radius: 20px; padding: 3px 10px;
+}
+.sp-kbd {
+  font-size: 11.5px; color: var(--text-dim);
+  border: 1px solid var(--wash-3); border-bottom-width: 2px;
+  border-radius: 6px; padding: 3px 9px; background: var(--wash-0);
+  font-family: var(--font-ui);
+}
+
+/* 开关（ZCode 式胶囊） */
+.switch { position: relative; display: inline-block; width: 42px; height: 23px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .slider {
+  position: absolute; inset: 0; cursor: pointer;
+  background: var(--wash-3); border-radius: 23px;
+  transition: background var(--dur) var(--ease);
+}
+.switch .slider::before {
+  content: ""; position: absolute; width: 17px; height: 17px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%;
+  transition: transform var(--dur) var(--ease);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+.switch input:checked + .slider { background: var(--accent); }
+.switch input:checked + .slider::before { transform: translateX(19px); }
+
+/* 代码预览卡 */
+.sp-codeprev { padding: 14px 16px 16px; }
+.sp-code-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 13px; font-weight: 600; margin-bottom: 10px;
+}
+.sp-codeprev .pv-code { position: relative; border-radius: var(--radius); }
+.sp-codeprev .code-gutter { user-select: none; }
+
+/* 底部操作 */
+.sp-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  margin-top: 20px;
+}
+.sp-actions .uw-foot-note { margin-right: auto; }
+
+/* 代码字号 token（page 与文件预览共用） */
+:root { --pv-code-size: 12.5px; }
+.pv-code .code-body code { font-size: var(--pv-code-size); }
+.pv-code.no-gutter .code-gutter { display: none; }
+
+/* 分区切换（每次只显示导航对应分区） */
+.settings-page .sp-section { display: none; }
+.settings-page .sp-section.active { display: block; }
+.sp-nav-item:focus, .sp-back:focus, .sp-nav-item:focus-visible { outline: none; }

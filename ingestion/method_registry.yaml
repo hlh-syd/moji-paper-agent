@@ -1,0 +1,936 @@
+# 方法 -> 原论文 注册表
+# 用途：
+#   1) src/project_indexer.py 用 code_patterns 在研究脚本中匹配方法
+#   2) ingestion/build_methods_kb.py 抓取论文元数据/摘要/OA全文，构建 method_papers 向量库
+# 字段说明：
+#   pubmed_query: 当 pmid 缺失时用 PubMed esearch 兜底检索（验证后人工确认）
+#   arxiv_id: 有 arXiv 版本的填，用于抓 OA 全文
+#   confidence: high = 元数据已核对; medium = 标题/DOI 可信但未逐字核对; search = 需在构建时经 PubMed 检索确认
+
+- id: cox_ph
+  name_zh: Cox比例风险模型
+  name_en: Cox proportional hazards regression
+  category: 生存模型
+  code_patterns: ["CoxPHFitter", "CoxPHSurvivalAnalysis", "lifelines"]
+  paper:
+    title: "Regression models and life-tables"
+    authors: "Cox DR"
+    year: 1972
+    journal: "Journal of the Royal Statistical Society: Series B"
+    doi: "10.1111/j.2517-6161.1972.tb00899.x"
+  confidence: high
+
+- id: efron_likelihood
+  name_zh: Efron结部分似然
+  name_en: Efron's handling of tied event times in Cox likelihood
+  category: 生存模型
+  code_patterns: ["Efron", "efron"]
+  paper:
+    title: "The efficiency of Cox's likelihood function for censored data"
+    authors: "Efron B"
+    year: 1977
+    journal: "Journal of the American Statistical Association"
+    doi: "10.1080/01621459.1977.10481019"
+  confidence: high
+
+- id: breslow_baseline
+  name_zh: Breslow基线风险与得分检验
+  name_en: Breslow estimator of baseline hazard; Breslow score test
+  category: 生存模型
+  code_patterns: ["breslow", "Breslow", "cox_score", "predict_cumulative_hazard"]
+  paper:
+    title: "Covariance analysis of censored survival data"
+    authors: "Breslow N"
+    year: 1974
+    journal: "Biometrics"
+    doi: "10.2307/2529620"
+  pubmed_query: "Breslow covariance analysis censored survival data"
+  confidence: high
+
+- id: elastic_net
+  name_zh: 弹性网正则化
+  name_en: Elastic net regularization
+  category: 正则化
+  code_patterns: ["l1_ratio", "elasticnet", "elastic_net"]
+  paper:
+    title: "Regularization and variable selection via the elastic net"
+    authors: "Zou H, Hastie T"
+    year: 2005
+    journal: "Journal of the Royal Statistical Society: Series B"
+    doi: "10.1111/j.1467-9868.2005.00503.x"
+  confidence: high
+
+- id: coxnet
+  name_zh: 弹性网Cox(Coxnet)
+  name_en: Coordinate descent for regularized Cox models (glmnet/Coxnet)
+  category: 生存模型
+  code_patterns: ["CoxnetSurvivalAnalysis", "penalty_factor"]
+  paper:
+    title: "Regularization paths for Cox's proportional hazards model via coordinate descent"
+    authors: "Simon N, Friedman J, Hastie T, Tibshirani R"
+    year: 2011
+    journal: "Journal of Statistical Software"
+    doi: "10.18637/jss.v039.i05"
+  confidence: high
+
+- id: lasso
+  name_zh: LASSO变量选择
+  name_en: LASSO (L1 penalized regression)
+  category: 正则化
+  code_patterns: ["Lasso", "L1", "lasso"]
+  paper:
+    title: "Regression shrinkage and selection via the lasso"
+    authors: "Tibshirani R"
+    year: 1996
+    journal: "Journal of the Royal Statistical Society: Series B"
+    doi: "10.1111/j.2517-6161.1996.tb02080.x"
+  confidence: high
+
+- id: glmnet_1se
+  name_zh: glmnet坐标下降与1-SE规则
+  name_en: glmnet regularization paths and the 1-SE rule
+  category: 正则化
+  code_patterns: ["1-SE", "one-standard", "alphas", "glmnet"]
+  paper:
+    title: "Regularization paths for generalized linear models via coordinate descent"
+    authors: "Friedman J, Hastie T, Tibshirani R"
+    year: 2010
+    journal: "Journal of Statistical Software"
+    doi: "10.18637/jss.v033.i01"
+  confidence: high
+
+- id: harrell_c
+  name_zh: Harrell一致性指数(C指数)
+  name_en: Harrell's concordance index
+  category: 模型评估
+  code_patterns: ["concordance_index", "harrell"]
+  paper:
+    title: "Multivariable prognostic models: issues in developing models, evaluating assumptions and adequacy, and measuring and reducing errors"
+    authors: "Harrell FE Jr, Lee KL, Mark DB"
+    year: 1996
+    journal: "Statistics in Medicine"
+    doi: "10.1002/(SICI)1097-0258(19960229)15:4<361::AID-SIM168>3.0.CO;2-4"
+  confidence: high
+
+- id: uno_c
+  name_zh: Uno's IPCW一致性指数
+  name_en: Uno's IPCW-weighted C-statistic
+  category: 模型评估
+  code_patterns: ["uno_c", "Uno", "ipcw_c"]
+  paper:
+    title: "On the C-statistics for evaluating overall adequacy of risk prediction procedures with censored survival data"
+    authors: "Uno H, Cai T, Pencina MJ, D'Agostino RB Jr, Wei LJ"
+    year: 2011
+    journal: "Statistics in Medicine"
+    doi: "10.1002/sim.4154"
+  confidence: high
+
+- id: td_auc
+  name_zh: 时间依赖性ROC/AUC
+  name_en: Time-dependent ROC curves and AUC for censored survival data
+  category: 模型评估
+  code_patterns: ["cumulative_dynamic_auc", "td_auc"]
+  paper:
+    title: "Time-dependent ROC curves for censored survival data and a diagnostic marker"
+    authors: "Heagerty PJ, Lumley T, Pepe MS"
+    year: 2000
+    journal: "Biometrics"
+    doi: "10.1111/j.0006-341X.2000.00337.x"
+  confidence: high
+
+- id: ibs
+  name_zh: 集成Brier评分
+  name_en: Integrated Brier Score (Brier score for survival)
+  category: 模型评估
+  code_patterns: ["integrated_brier_score", "brier"]
+  paper:
+    title: "Assessment and comparison of prognostic classification schemes for survival data"
+    authors: "Graf E, Schmoor C, Sauerbrei W, Schumacher M"
+    year: 1999
+    journal: "Statistics in Medicine"
+    doi: "10.1002/(SICI)1097-0258(19990915/30)18:17/18<2529::AID-SIM274>3.0.CO;2-Y"
+  confidence: high
+
+- id: gerd_ipcw_brier
+  name_zh: IPCW预测误差估计
+  name_en: IPCW-consistent estimation of expected Brier score
+  category: 模型评估
+  code_patterns: ["ipcw"]
+  paper:
+    title: "Consistent estimation of the expected Brier score in general survival models with right-censored event times"
+    authors: "Gerds TA, Schumacher M"
+    year: 2006
+    journal: "Biometrical Journal"
+    doi: "10.1002/bimj.200610301"
+  confidence: high
+
+- id: pseudo_values
+  name_zh: 伪值(pseudo-value)方法
+  name_en: Pseudo-observations in survival analysis
+  category: 统计方法
+  code_patterns: ["pseudo", "jackknife"]
+  paper:
+    title: "Pseudo-observations in survival analysis"
+    authors: "Andersen PK, Perme MP"
+    year: 2010
+    journal: "Statistical Methods in Medical Research"
+    doi: "10.1177/0962280209105020"
+  confidence: high
+
+- id: kaplan_meier
+  name_zh: Kaplan-Meier生存曲线
+  name_en: Kaplan-Meier estimator
+  category: 生存分析基础
+  code_patterns: ["KaplanMeierFitter", "kaplan"]
+  paper:
+    title: "Nonparametric estimation from incomplete observations"
+    authors: "Kaplan EL, Meier P"
+    year: 1958
+    journal: "Journal of the American Statistical Association"
+    doi: "10.1080/01621459.1958.10501452"
+  confidence: high
+
+- id: logrank
+  name_zh: Log-rank检验
+  name_en: Log-rank test
+  category: 生存分析基础
+  code_patterns: ["logrank", "multivariate_logrank"]
+  paper:
+    title: "Evaluation of survival data and two new rank order statistics arising in its consideration"
+    authors: "Mantel N"
+    year: 1966
+    journal: "Cancer Chemotherapy Reports"
+    doi: null
+  pubmed_query: "Mantel evaluation of survival data two new rank order statistics"
+  confidence: high
+
+- id: rmst
+  name_zh: 限制平均生存时间(RMST)
+  name_en: Restricted mean survival time
+  category: 生存分析基础
+  code_patterns: ["restricted_mean_survival_time", "rmst"]
+  paper:
+    title: "The use of restricted mean survival time to estimate the treatment effect in randomized clinical trials when the proportional hazards assumption is in doubt"
+    authors: "Royston P, Parmar MKB"
+    year: 2013
+    journal: "BMC Medical Research Methodology"
+    doi: "10.1186/1471-2288-13-152"
+  confidence: high
+
+- id: combat
+  name_zh: ComBat批次校正
+  name_en: ComBat empirical Bayes batch effect adjustment
+  category: 数据预处理
+  code_patterns: ["ComBat", "combat"]
+  paper:
+    title: "Adjusting batch effects in microarray expression data using empirical Bayes methods"
+    authors: "Johnson WE, Li C, Rabinovic A"
+    year: 2007
+    journal: "Biostatistics"
+    doi: "10.1093/biostatistics/kxj037"
+  confidence: high
+
+- id: permanova
+  name_zh: PERMANOVA多元方差分析
+  name_en: PERMANOVA (non-parametric multivariate ANOVA)
+  category: 统计方法
+  code_patterns: ["permanova", "PERMANOVA"]
+  paper:
+    title: "A new method for non-parametric multivariate analysis of variance"
+    authors: "Anderson MJ"
+    year: 2001
+    journal: "Austral Ecology"
+    doi: "10.1111/j.1442-9993.2001.01070.pp.x"
+  confidence: high
+
+- id: kbet
+  name_zh: kBET批次效应检验
+  name_en: kBET batch effect test metric
+  category: 数据预处理
+  code_patterns: ["kbet", "kBET"]
+  paper:
+    title: "A test metric for assessing single-cell RNA-seq batch correction"
+    authors: "Buttner M, Miao Z, Wolf FA, Teichmann SA, Theis FJ"
+    year: 2019
+    journal: "Nature Methods"
+    doi: "10.1038/s41592-018-0254-1"
+  confidence: high
+
+- id: silhouette
+  name_zh: 轮廓系数
+  name_en: Silhouette cluster validation
+  category: 统计方法
+  code_patterns: ["silhouette"]
+  paper:
+    title: "Silhouettes: a graphical aid to the interpretation and validation of cluster analysis"
+    authors: "Rousseeuw PJ"
+    year: 1987
+    journal: "Journal of Computational and Applied Mathematics"
+    doi: "10.1016/0377-0427(87)90125-7"
+  confidence: high
+
+- id: missforest
+  name_zh: MissForest插补
+  name_en: MissForest non-parametric missing value imputation
+  category: 数据预处理
+  code_patterns: ["MissForest", "missforest", "IterativeImputer"]
+  paper:
+    title: "MissForest--non-parametric missing value imputation for mixed-type data"
+    authors: "Stekhoven DJ, Buhlmann P"
+    year: 2012
+    journal: "Bioinformatics"
+    doi: "10.1093/bioinformatics/btr597"
+  confidence: high
+
+- id: mice
+  name_zh: MICE链式方程多重插补
+  name_en: Multivariate imputation by chained equations (MICE)
+  category: 数据预处理
+  code_patterns: ["MICE", "mice"]
+  paper:
+    title: "mice: Multivariate Imputation by Chained Equations in R"
+    authors: "van Buuren S, Groothuis-Oudshoorn K"
+    year: 2011
+    journal: "Journal of Statistical Software"
+    doi: "10.18637/jss.v045.i03"
+  confidence: high
+
+- id: knn_impute
+  name_zh: KNN缺失值插补
+  name_en: KNN imputation for microarray missing values
+  category: 数据预处理
+  code_patterns: ["KNNImputer", "knn"]
+  paper:
+    title: "Missing value estimation methods for DNA microarrays"
+    authors: "Troyanskaya O, Cantor M, Sherlock G, et al."
+    year: 2001
+    journal: "Bioinformatics"
+    doi: "10.1093/bioinformatics/17.6.520"
+  confidence: high
+
+- id: gain_impute
+  name_zh: GAIN生成式对抗插补
+  name_en: "GAIN: missing data imputation using GANs (legacy CMIB-Surv component)"
+  category: 数据预处理
+  code_patterns: ["GAIN", "gain_imputer"]
+  paper:
+    title: "GAIN: Missing Data Imputation using Generative Adversarial Nets"
+    authors: "Yoon J, Jordon J, van der Schaar M"
+    year: 2018
+    journal: "ICML"
+    doi: "10.48550/arXiv.1806.02920"
+  arxiv_id: "1806.02920"
+  confidence: high
+
+- id: vae
+  name_zh: 变分自编码器数据增强
+  name_en: Variational Auto-Encoder (legacy CMIB-Surv augmentation)
+  category: 数据增强
+  code_patterns: ["VAE", "vae_augmentor", "AutoencoderKL"]
+  paper:
+    title: "Auto-Encoding Variational Bayes"
+    authors: "Kingma DP, Welling M"
+    year: 2014
+    journal: "ICLR"
+    doi: "10.48550/arXiv.1312.6114"
+  arxiv_id: "1312.6114"
+  confidence: high
+
+- id: wgan_gp
+  name_zh: WGAN-GP生成对抗训练
+  name_en: Improved training of Wasserstein GANs (gradient penalty)
+  category: 数据增强
+  code_patterns: ["lambda_gp", "n_critic", "WGAN"]
+  paper:
+    title: "Improved Training of Wasserstein GANs"
+    authors: "Gulrajani I, Ahmed F, Arjovsky M, Dumoulin V, Courville A"
+    year: 2017
+    journal: "NeurIPS"
+    doi: "10.48550/arXiv.1704.00028"
+  arxiv_id: "1704.00028"
+  confidence: high
+
+- id: mrmr
+  name_zh: mRMR特征选择
+  name_en: Minimum redundancy maximum relevance (mRMR) feature selection
+  category: 特征工程
+  code_patterns: ["mrmr", "mRMR", "min-redundancy"]
+  paper:
+    title: "Feature selection based on mutual information: criteria of max-dependency, max-relevance, and min-redundancy"
+    authors: "Peng H, Long F, Ding C"
+    year: 2005
+    journal: "IEEE Transactions on Pattern Analysis and Machine Intelligence"
+    doi: "10.1109/TPAMI.2005.159"
+  confidence: high
+
+- id: markov_blanket
+  name_zh: 马尔可夫毯筛选
+  name_en: Markov blanket discovery
+  category: 因果推断
+  code_patterns: ["markov_blanket", "Markov", "blanket"]
+  paper:
+    title: "Probabilistic Reasoning in Intelligent Systems: Networks of Plausible Inference"
+    authors: "Pearl J"
+    year: 1988
+    journal: "Morgan Kaufmann"
+    doi: null
+  pubmed_query: null
+  confidence: high
+
+- id: iamb
+  name_zh: IAMB马尔可夫毯发现算法
+  name_en: Specifying Markov blankets with the IAMB algorithm
+  category: 因果推断
+  code_patterns: ["iamb", "IAMB"]
+  paper:
+    title: "Specifying Markov blankets with the IAMB"
+    authors: "Yaramakala S, Margaritis D"
+    year: 2005
+    journal: "IEEE International Conference on Data Mining"
+    doi: "10.1109/ICDM.2005.79"
+  confidence: medium
+
+- id: stability_selection
+  name_zh: Bootstrap稳定性选择
+  name_en: Stability selection
+  category: 特征工程
+  code_patterns: ["bootstrap", "stability", "selection_frequency"]
+  paper:
+    title: "Stability selection"
+    authors: "Meinshausen N, Buhlmann P"
+    year: 2010
+    journal: "Journal of the Royal Statistical Society: Series B"
+    doi: "10.1111/j.1467-9868.2010.00740.x"
+  confidence: high
+
+- id: backdoor
+  name_zh: 后门调整
+  name_en: Backdoor adjustment for causal effect estimation
+  category: 因果推断
+  code_patterns: ["backdoor", "back-door", "adjustment_set"]
+  paper:
+    title: "Causal diagrams for empirical research"
+    authors: "Pearl J"
+    year: 1995
+    journal: "Biometrika"
+    doi: "10.1093/biomet/82.4.669"
+  confidence: high
+
+- id: e_value
+  name_zh: E-value混杂敏感性分析
+  name_en: E-value sensitivity analysis for unmeasured confounding
+  category: 因果推断
+  code_patterns: ["e_value", "E-value", "E_value"]
+  paper:
+    title: "Sensitivity analysis in observational research: introducing the E-value"
+    authors: "VanderWeele TJ, Ding P"
+    year: 2017
+    journal: "Annals of Internal Medicine"
+    doi: "10.7326/M16-2607"
+  confidence: high
+
+- id: ipw
+  name_zh: 逆概率加权(IPW)
+  name_en: Inverse probability weighting / marginal structural models
+  category: 因果推断
+  code_patterns: ["IPW", "ipw", "propensity"]
+  paper:
+    title: "Marginal structural models and causal inference in epidemiology"
+    authors: "Robins JM, Hernan MA, Brumback B"
+    year: 2000
+    journal: "Epidemiology"
+    doi: "10.1097/00001648-200009000-00011"
+  confidence: high
+
+- id: aipw
+  name_zh: 增强逆概率加权(AIPW)
+  name_en: Augmented inverse probability weighting (doubly robust)
+  category: 因果推断
+  code_patterns: ["AIPW", "aipw"]
+  paper:
+    title: "Estimation of regression coefficients when some regressors are not always observed"
+    authors: "Robins JM, Rotnitzky A, Zhao LP"
+    year: 1994
+    journal: "Journal of the American Statistical Association"
+    doi: "10.1080/01621459.1994.10476818"
+  confidence: high
+
+- id: landmark_analysis
+  name_zh: 地标分析
+  name_en: Landmark analysis in survival analysis
+  category: 生存分析基础
+  code_patterns: ["landmark", "Landmark"]
+  paper:
+    title: "Landmark analysis at the 25-year landmark point"
+    authors: "Dafni U"
+    year: 2011
+    journal: "Circulation: Cardiovascular Quality and Outcomes"
+    doi: "10.1161/CIRCOUTCOMES.110.957951"
+  confidence: high
+
+- id: double_ml
+  name_zh: 交叉拟合去偏估计
+  name_en: Double/debiased machine learning (cross-fitting)
+  category: 因果推断
+  code_patterns: ["cross_fit", "crossfit", "cross-fitted", "split_half"]
+  paper:
+    title: "Double/debiased machine learning for treatment and structural parameters"
+    authors: "Chernozhukov V, Chetverikov D, Demirer M, et al."
+    year: 2018
+    journal: "The Econometrics Journal"
+    doi: "10.1111/ectj.12097"
+  confidence: high
+
+- id: xgboost
+  name_zh: XGBoost生存分析
+  name_en: XGBoost (survival:cox objective)
+  category: 机器学习模型
+  code_patterns: ["xgboost", "XGBClassifier", "XGBRegressor", "survival:cox"]
+  paper:
+    title: "XGBoost: A scalable tree boosting system"
+    authors: "Chen T, Guestrin C"
+    year: 2016
+    journal: "KDD '16"
+    doi: "10.1145/2939672.2939785"
+  confidence: high
+
+- id: rsf
+  name_zh: 随机生存森林
+  name_en: Random survival forests
+  category: 机器学习模型
+  code_patterns: ["RandomSurvivalForest", "rsf"]
+  paper:
+    title: "Random survival forests"
+    authors: "Ishwaran H, Kogalur UB, Blackstone EH, Lauer MS"
+    year: 2008
+    journal: "The Annals of Applied Statistics"
+    doi: "10.1214/08-AOAS169"
+  confidence: high
+
+- id: stacking
+  name_zh: 堆叠泛化集成
+  name_en: Stacked generalization
+  category: 集成学习
+  code_patterns: ["Stack", "stacked", "meta_learner"]
+  paper:
+    title: "Stacked generalization"
+    authors: "Wolpert DH"
+    year: 1992
+    journal: "Neural Networks"
+    doi: "10.1016/S0893-6080(05)80023-1"
+  confidence: high
+
+- id: bagging
+  name_zh: Bootstrap聚合(Bagging)
+  name_en: Bagging predictors
+  category: 集成学习
+  code_patterns: ["bagging", "subsample_bootstrap"]
+  paper:
+    title: "Bagging predictors"
+    authors: "Breiman L"
+    year: 1996
+    journal: "Machine Learning"
+    doi: "10.1007/BF00058655"
+  confidence: high
+
+- id: tripod
+  name_zh: TRIPOD预测模型报告规范
+  name_en: TRIPOD statement for prediction model reporting
+  category: 报告规范
+  code_patterns: ["TRIPOD"]
+  paper:
+    title: "Transparent reporting of a multivariable prediction model for individual prognosis or diagnosis (TRIPOD): the TRIPOD statement"
+    authors: "Collins GS, Reitsma JB, Altman DG, Moons KGM"
+    year: 2015
+    journal: "BMJ"
+    doi: "10.1136/bmj.g7594"
+  confidence: high
+
+- id: loco_cv
+  name_zh: 留一队列交叉验证(LOCO)
+  name_en: Leave-one-cohort-out external validation of prediction models
+  category: 模型评估
+  code_patterns: ["LOCO", "loco"]
+  paper:
+    title: "Prediction model performance may be evaluated externally only: TRIPOD explanation and elaboration"
+    authors: "Moons KGM, Altman DG, Reitsma JB, et al."
+    year: 2015
+    journal: "BMJ"
+    doi: "10.1136/bmj.g7594"
+  pubmed_query: "TRIPOD explanation elaboration prediction model"
+  confidence: medium
+
+- id: vif
+  name_zh: 方差膨胀因子(VIF)
+  name_en: Variance inflation factor
+  category: 统计方法
+  code_patterns: ["vif", "VIF"]
+  paper:
+    title: "A caution regarding rules of thumb for variance inflation factors"
+    authors: "O'Brien RM"
+    year: 2007
+    journal: "Quality & Quantity"
+    doi: "10.1007/s11135-006-9018-6"
+  confidence: high
+
+- id: rint
+  name_zh: 秩逆正态变换(RINT)
+  name_en: Rank-based inverse normal transformation
+  category: 统计方法
+  code_patterns: ["rint", "RINT", "rank_norm", "rankdata"]
+  paper:
+    title: "Rank-based inverse normal transformations are increasingly used, but are they merited?"
+    authors: "Beasley TM, Erickson S, Allison DB"
+    year: 2009
+    journal: "Behavior Genetics"
+    doi: "10.1007/s10519-009-9281-0"
+  confidence: high
+
+- id: quantile_norm
+  name_zh: 分位数归一化
+  name_en: Quantile normalization
+  category: 数据预处理
+  code_patterns: ["quantile", "rank-normal", "rank_normal"]
+  paper:
+    title: "A comparison of normalization methods for high density oligonucleotide array data based on variance and bias"
+    authors: "Bolstad BM, Irizarry RA, Astrand M, Speed TP"
+    year: 2003
+    journal: "Bioinformatics"
+    doi: "10.1093/bioinformatics/19.2.185"
+  confidence: high
+
+- id: msigdb_hallmark
+  name_zh: MSigDB Hallmark通路
+  name_en: MSigDB hallmark gene set collection
+  category: 通路分析
+  code_patterns: ["hallmark", "Hallmark", "msigdb", "gmt"]
+  paper:
+    title: "The Molecular Signatures Database (MSigDB) hallmark gene set collection"
+    authors: "Liberzon A, Birger C, Thorvaldsdottir H, Ghandi M, Mesirov JP, Tamayo P"
+    year: 2015
+    journal: "Cell Systems"
+    doi: "10.1016/j.cels.2015.12.004"
+  confidence: high
+
+- id: gsea
+  name_zh: 基因集富集分析
+  name_en: Gene set enrichment analysis
+  category: 通路分析
+  code_patterns: ["enrich", "gsea", "GSEA"]
+  paper:
+    title: "Gene set enrichment analysis: a knowledge-based approach for interpreting genome-wide expression profiles"
+    authors: "Subramanian A, Tamayo P, Mootha VK, et al."
+    year: 2005
+    journal: "PNAS"
+    doi: "10.1073/pnas.0506580102"
+  confidence: high
+
+- id: msisensor
+  name_zh: MSIsensor微卫星不稳定性检测
+  name_en: MSIsensor microsatellite instability detection
+  category: 基因组学
+  code_patterns: ["MSIsensor", "msisensor", "msi"]
+  paper:
+    title: "MSIsensor: microsatellite instability detection using paired tumor-normal sequence data"
+    authors: "Niu B, Ye K, Zhang Q, et al."
+    year: 2014
+    journal: "Bioinformatics"
+    doi: "10.1093/bioinformatics/btt755"
+  confidence: high
+
+- id: mantis
+  name_zh: MANTIS微卫星不稳定性评分
+  name_en: MANTIS microsatellite instability score
+  category: 基因组学
+  code_patterns: ["MANTIS", "mantis"]
+  paper:
+    title: "MANTIS: sensitive detection of microsatellite instability from targeted sequencing"
+    authors: "(以PubMed检索结果为准)"
+    year: 2018
+    journal: null
+    doi: null
+  pubmed_query: "MANTIS microsatellite instability targeted sequencing"
+  confidence: search
+
+- id: kruskal_wallis
+  name_zh: Kruskal-Wallis检验
+  name_en: Kruskal-Wallis rank sum test
+  category: 统计方法
+  code_patterns: ["kruskal", "Kruskal"]
+  paper:
+    title: "Use of ranks in one-criterion variance analysis"
+    authors: "Kruskal WH, Wallis WA"
+    year: 1952
+    journal: "Journal of the American Statistical Association"
+    doi: "10.1080/01621459.1952.10483441"
+  confidence: high
+
+- id: mann_whitney
+  name_zh: Mann-Whitney U检验
+  name_en: Mann-Whitney U test
+  category: 统计方法
+  code_patterns: ["mannwhitneyu", "Mann-Whitney"]
+  paper:
+    title: "On a test of whether one of two random variables is stochastically larger than the other"
+    authors: "Mann HB, Whitney DR"
+    year: 1947
+    journal: "Annals of Mathematical Statistics"
+    doi: "10.1214/aoms/1177730491"
+  confidence: high
+
+- id: mcnemar
+  name_zh: McNemar精确检验
+  name_en: McNemar test for paired proportions
+  category: 统计方法
+  code_patterns: ["mcnemar", "McNemar"]
+  paper:
+    title: "Note on the sampling error of the difference between correlated proportions or percentages"
+    authors: "McNemar Q"
+    year: 1947
+    journal: "Psychometrika"
+    doi: "10.1007/BF02295996"
+  confidence: high
+
+- id: fisher_exact
+  name_zh: Fisher精确检验
+  name_en: Fisher's exact test
+  category: 统计方法
+  code_patterns: ["fisher_exact", "fisher"]
+  paper:
+    title: "The logic of inductive inference"
+    authors: "Fisher RA"
+    year: 1935
+    journal: "Journal of the Royal Statistical Society"
+    doi: "10.2307/2341952"
+  confidence: high
+
+- id: bh_fdr
+  name_zh: Benjamini-Hochberg FDR校正
+  name_en: Benjamini-Hochberg false discovery rate control
+  category: 统计方法
+  code_patterns: ["benjamini", "fdr", "FDR", "multipletests"]
+  paper:
+    title: "Controlling the false discovery rate: a practical and powerful approach to multiple testing"
+    authors: "Benjamini Y, Hochberg Y"
+    year: 1995
+    journal: "Journal of the Royal Statistical Society: Series B"
+    doi: "10.1111/j.2517-6161.1995.tb02031.x"
+  confidence: high
+
+- id: holm
+  name_zh: Holm逐步校正
+  name_en: Holm's sequentially rejective multiple test procedure
+  category: 统计方法
+  code_patterns: ["holm", "Holm"]
+  paper:
+    title: "A simple sequentially rejective multiple test procedure"
+    authors: "Holm S"
+    year: 1979
+    journal: "Scandinavian Journal of Statistics"
+    doi: null
+  pubmed_query: null
+  confidence: high
+
+- id: bootstrap
+  name_zh: Bootstrap置信区间
+  name_en: Bootstrap methods
+  category: 统计方法
+  code_patterns: ["bootstrap", "Bootstrap"]
+  paper:
+    title: "Bootstrap methods: another look at the jackknife"
+    authors: "Efron B"
+    year: 1979
+    journal: "The Annals of Statistics"
+    doi: "10.1214/aos/1176344552"
+  confidence: high
+
+- id: ks_test
+  name_zh: Kolmogorov-Smirnov检验
+  name_en: Kolmogorov-Smirnov goodness-of-fit test
+  category: 统计方法
+  code_patterns: ["ks_2samp", "kstest"]
+  paper:
+    title: "The Kolmogorov-Smirnov test for goodness of fit"
+    authors: "Massey FJ Jr"
+    year: 1951
+    journal: "Journal of the American Statistical Association"
+    doi: "10.1080/01621459.1951.10500769"
+  confidence: high
+
+- id: epv
+  name_zh: 每变量事件数上限(EPV)
+  name_en: Events per variable constraint
+  category: 建模规范
+  code_patterns: ["epv", "EPV"]
+  paper:
+    title: "A simulation study of the number of events per variable in logistic regression analysis"
+    authors: "Peduzzi P, Concato J, Kemper E, Holford TR, Feinstein AR"
+    year: 1996
+    journal: "Journal of Clinical Epidemiology"
+    doi: "10.1016/S0895-4356(96)00236-3"
+  confidence: high
+
+# ---------- 数据集来源 ----------
+- id: tcga_coadread
+  name_zh: TCGA结直肠癌多组学队列
+  name_en: TCGA COADREAD cohort
+  category: 数据集
+  code_patterns: ["TCGA", "tcga"]
+  paper:
+    title: "Comprehensive molecular characterization of human colon and rectal cancer"
+    authors: "Cancer Genome Atlas Network"
+    year: 2012
+    journal: "Nature"
+    doi: "10.1038/nature11252"
+  confidence: high
+
+- id: gse39582
+  name_zh: GSE39582结直肠癌转录组队列
+  name_en: GSE39582 colon cancer expression cohort
+  category: 数据集
+  code_patterns: ["GSE39582"]
+  paper:
+    title: "Gene expression classification of colon cancer into molecular subtypes: characterization, validation, and clinical use"
+    authors: "Marisa L, de Reynies A, Duval A, et al."
+    year: 2013
+    journal: "PLoS Medicine"
+    doi: "10.1371/journal.pmed.1001453"
+  confidence: high
+
+- id: gse17538
+  name_zh: GSE17538结直肠癌转移谱队列
+  name_en: GSE17538 colon cancer metastasis signature cohort
+  category: 数据集
+  code_patterns: ["GSE17538"]
+  paper:
+    title: "Experimentally derived metastasis gene expression profile predicts recurrence and death in patients with colon cancer"
+    authors: "Smith JJ, Deane NG, Wu F, et al."
+    year: 2010
+    journal: "PLoS Medicine"
+    doi: "10.1371/journal.pmed.1000256"
+  confidence: high
+
+- id: cptac_coad
+  name_zh: CPTAC结直肠癌蛋白基因组队列
+  name_en: CPTAC colon cancer proteogenomic cohort
+  category: 数据集
+  code_patterns: ["CPTAC", "cptac"]
+  paper:
+    title: "Proteogenomic characterization of human colon and rectal cancer"
+    authors: "Zhang B, Wang J, Wang X, et al."
+    year: 2014
+    journal: "Nature"
+    doi: "10.1038/nature13438"
+  confidence: high
+
+- id: gse103479
+  name_zh: GSE103479结直肠癌队列
+  name_en: GSE103479 colorectal cancer cohort
+  category: 数据集
+  code_patterns: ["GSE103479"]
+  paper:
+    title: null
+    authors: null
+    year: null
+    journal: null
+    doi: null
+  pubmed_query: "GSE103479 colorectal cancer expression"
+  confidence: search
+
+# ---------- 已淘汰但需在讨论中说明的深度模型组件 ----------
+- id: deepsurv
+  name_zh: DeepSurv深度生存网络
+  name_en: DeepSurv Cox proportional hazards deep neural network (discontinued baseline)
+  category: 深度学习模型
+  code_patterns: ["DeepSurv", "deepsurv"]
+  paper:
+    title: "DeepSurv: personalized treatment recommender system using a Cox proportional hazards deep neural network"
+    authors: "Katzman JL, Shaham U, Cloninger A, Bates J, Jiang T, Kluger Y"
+    year: 2018
+    journal: "BMC Medical Research Methodology"
+    doi: "10.1186/s12916-018-1047-5"
+  confidence: high
+
+- id: hardconcrete
+  name_zh: HardConcrete稀疏门控
+  name_en: HardConcrete sparse gate (Bayesian compression; legacy CMIB-Surv)
+  category: 深度学习模型
+  code_patterns: ["HardConcrete", "sparse_gate"]
+  paper:
+    title: "Bayesian compression for deep learning"
+    authors: "Louizos C, Ullrich K, Welling M"
+    year: 2017
+    journal: "NeurIPS"
+    doi: "10.48550/arXiv.1705.08665"
+  arxiv_id: "1705.08665"
+  confidence: high
+
+- id: grl
+  name_zh: 梯度反转域对抗(GRL)
+  name_en: Domain-adversarial training / gradient reversal layer (legacy CMIB-Surv)
+  category: 深度学习模型
+  code_patterns: ["GRL", "grad_reverse", "domain_adversarial"]
+  paper:
+    title: "Unsupervised domain adaptation by backpropagation"
+    authors: "Ganin Y, Lempitsky V"
+    year: 2015
+    journal: "ICML"
+    doi: "10.48550/arXiv.1409.7495"
+  arxiv_id: "1409.7495"
+  confidence: high
+
+- id: coral
+  name_zh: CORAL潜在空间对齐
+  name_en: CORAL correlation alignment (legacy CMIB-Surv)
+  category: 深度学习模型
+  code_patterns: ["CORAL", "coral"]
+  paper:
+    title: "Return of frustratingly easy domain adaptation"
+    authors: "Sun B, Saenko K"
+    year: 2016
+    journal: "AAAI"
+    doi: "10.48550/arXiv.1511.05547"
+  arxiv_id: "1511.05547"
+  confidence: high
+
+- id: maml
+  name_zh: 元学习任务适配(MAML式)
+  name_en: Model-agnostic meta-learning (legacy CMIB-Surv adapter)
+  category: 深度学习模型
+  code_patterns: ["meta_trainer", "meta_learn", "MAML"]
+  paper:
+    title: "Model-agnostic meta-learning for fast adaptation of deep networks"
+    authors: "Finn C, Abbeel P, Levine S"
+    year: 2017
+    journal: "ICML"
+    doi: "10.48550/arXiv.1703.03400"
+  arxiv_id: "1703.03400"
+  confidence: high
+
+- id: information_bottleneck
+  name_zh: 信息瓶颈目标
+  name_en: Information bottleneck method (legacy CMIB-Surv loss)
+  category: 深度学习模型
+  code_patterns: ["information_bottleneck", "ib_loss"]
+  paper:
+    title: "The information bottleneck method"
+    authors: "Tishby N, Pereira FC, Bialek W"
+    year: 2000
+    journal: "arXiv"
+    doi: "10.48550/arXiv.physics/0004057"
+  arxiv_id: "physics/0004057"
+  confidence: high
+
+- id: knowledge_distillation
+  name_zh: 知识蒸馏
+  name_en: Knowledge distillation (legacy CMIB-Surv loss)
+  category: 深度学习模型
+  code_patterns: ["distill", "knowledge_distillation"]
+  paper:
+    title: "Distilling the knowledge in a neural network"
+    authors: "Hinton G, Vinyals O, Dean J"
+    year: 2015
+    journal: "arXiv"
+    doi: "10.48550/arXiv.1503.02531"
+  arxiv_id: "1503.02531"
+  confidence: high

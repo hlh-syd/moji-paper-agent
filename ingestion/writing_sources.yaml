@@ -1,0 +1,71 @@
+# 论文写作教学知识库 —— 网络公开来源清单
+# 类型 web: 用 requests+bs4 抓取正文文本
+# 类型 bilibili: 用 yt-dlp 拉取 CC/AI 字幕（无字幕自动跳过并记录）
+# 注意：只抓公开可访问材料；书籍正文不抓盗版全文，仅收录公开页面/官方写作指南
+
+web_sources:
+  - id: nature_summary_formula
+    title: "Nature 摘要段落写作公式（官方指南）"
+    url: "https://www.nature.com/documents/nature-summary-paragraph.pdf"
+    kind: pdf
+    tags: [摘要, 写作结构]
+
+  - id: gopen_swan
+    title: "The Science of Scientific Writing (Gopen & Swan)"
+    url: "https://www.americanscientist.org/blog/the-long-view/the-science-of-scientific-writing"
+    kind: html
+    tags: [英文写作, 句子结构, 读者预期]
+
+  - id: academic_phrasebank
+    title: "Academic Phrasebank (University of Manchester)"
+    url: "https://www.phrasebank.manchester.ac.uk/introducing-work/"
+    kind: html
+    tags: [学术短语, 短语库]
+
+  - id: phrasebank_describing_methods
+    title: "Academic Phrasebank - Describing Methods"
+    url: "https://www.phrasebank.manchester.ac.uk/describing-methods/"
+    kind: html
+    tags: [方法部分, 学术短语]
+
+  - id: phrasebank_discussing_findings
+    title: "Academic Phrasebank - Discussing Findings"
+    url: "https://www.phrasebank.manchester.ac.uk/discussing-findings/"
+    kind: html
+    tags: [结果讨论, 学术短语]
+
+  - id: phrasebank_writing_conclusions
+    title: "Academic Phrasebank - Writing Conclusions"
+    url: "https://www.phrasebank.manchester.ac.uk/writing-conclusions/"
+    kind: html
+    tags: [结论, 学术短语]
+
+  - id: tripod_statement_zh
+    title: "TRIPOD 预测模型报告规范说明"
+    url: "https://www.equator-network.org/reporting-guidances/tripod-statement/"
+    kind: html
+    tags: [报告规范, 预测模型, TRIPOD]
+
+  - id: prmcp_zh
+    title: "中华医学会杂志社 - 医学论文写作与投稿规范（公开页面）"
+    url: "https://zhyxyl.yiigle.com/"
+    kind: html
+    tags: [中文期刊, 投稿规范]
+    optional: true
+
+  - id: gbt7714_intro
+    title: "GB/T 7714-2015 信息与文献 参考文献著录规则（说明页）"
+    url: "https://std.samr.gov.cn/gb/search/gbDetailed?id=71F77267FF9FB5B49C1D318CDEBB6D33"
+    kind: html
+    tags: [参考文献, GB/T 7714]
+    optional: true
+
+# B站检索关键词（构建时按关键词搜索高播放量视频，拉取 CC/AI 字幕）
+bilibili_search:
+  keywords:
+    - "论文写作 教程"
+    - "SCI论文写作"
+    - "学术论文写作 方法"
+  max_videos_per_keyword: 4
+  # 无字幕视频直接跳过（B站 AI 字幕通常需登录 cookie 才能下载）
+  cookie_from_browser: null   # 如需 AI 字幕可设为 "chrome"/"edge" 借用浏览器登录态

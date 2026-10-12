@@ -1,0 +1,147 @@
+conversation:
+  enable_auto_summary: true
+  max_messages: 50
+  summary_interval: 5
+  summary_min_messages: 8
+export_style:
+  body_align: justify
+  body_font_px: 16.0
+  cell_align: center
+  fig_width_pct: 100
+  first_indent_em: 2.0
+  line_height: 1.5
+  table_align: center
+  table_font_px: 14.0
+  table_width: full
+knowledge_base:
+  methods_dir: ./knowledge_base/method_papers
+  project_root: ''
+  registry_dir: ./ingestion
+  writing_dir: ./knowledge_base/writing_methodology
+logging:
+  level: INFO
+  file: logs/paper_agent.log   # 全链路日志（自动附 [trace user]，按大小轮转）
+  format: json                 # text | json（json 接 ELK/Loki 免解析）
+  rotate_mb: 10                # 单文件 10MB，超出轮转
+  backup_count: 5              # 保留 5 份历史
+  llm_calls: true              # LLM 调用观测 → logs/llm_calls.jsonl
+models:
+  analyst_llm: glm-5.3-flash
+  embedding: bge-m3
+  llm: glm-5.3
+  max_tokens: 16384
+  provider: zhipu
+  small_llm: qwen3:4b-instruct
+  temperature: 0.4
+ollama:
+  base_url: http://localhost:11434
+  timeout: 20
+outline:
+  templates:
+    chinese_journal:
+      caps:
+        其他: 800
+        摘要: 800
+        结论: 1200
+      name: 中文科研论文（IMRAD：前言-材料与方法-结果-讨论）
+      sections:
+        其他: 0.03
+        前言: 0.1
+        摘要: 0.05
+        材料与方法: 0.24
+        结果: 0.3
+        结论: 0.05
+        讨论: 0.23
+      total_words: 30000
+    cs_paper:
+      caps:
+        其他: 800
+        摘要: 800
+        结论: 1200
+      name: 计算机/工程论文（引言-相关工作-方法-实验与结果）
+      sections:
+        实验与结果: 0.3
+        引言: 0.13
+        摘要: 0.05
+        方法: 0.35
+        相关工作: 0.12
+        结论: 0.03
+        讨论: 0.02
+      total_words: 30000
+    thesis_proposal:
+      caps:
+        其他: 800
+        摘要: 1000
+        结论: 1500
+      name: 学位小论文
+      sections:
+        其他: 0.03
+        前言: 0.12
+        摘要: 0.04
+        材料与方法: 0.26
+        结果: 0.28
+        结论: 0.03
+        讨论: 0.24
+      total_words: 50000
+quality:
+  bestof_n: 3
+  bestof_sections:
+  - 摘要
+  - 前言
+  - 讨论
+  review_rounds: 2
+rag:
+  enable_function_call: false
+  function_call_mode: auto
+rag_anything:
+  auto_ingest_on_upload: true
+  backend: pipeline
+  device: cuda
+  embedding:
+    batch_size: 32
+    dim: 1024
+  enabled: true
+  model_source: modelscope
+  models:
+    light: glm-5.3-flash
+    llm: glm-5.3
+    vision: glm-5.3-flash
+  parse_method: auto
+  parser: mineru
+  query_mode: hybrid
+  query_top_k: 12
+  workspace: ./lightrag_storage/references
+server:
+  enable_websocket: true
+  host: 0.0.0.0
+  port: 8000
+system:
+  default_domain: auto
+  mode: enhanced
+  name: 墨记 论文智能体
+  version: 3.1.0
+  workspace_root: ../
+tools:
+  disabled_tools: []
+  enabled_categories:
+  - paper
+vector_store:
+  collections:
+    method_papers: method_papers
+    project_files: project_files
+    writing_methodology: writing_methodology_zh
+  persist_directory: ./chroma_db
+  search_k: 6
+vision:
+  base_url: https://open.bigmodel.cn/api/coding/paas/v4/
+  enabled: true
+  max_images: 4
+  max_profile_images: 24
+  model: glm-5.3-flash
+  timeout: 120
+workspace:
+  exclude_dirs: []
+zhipu:
+  api_key_env: ZHIPU_API_KEY
+  base_url: https://open.bigmodel.cn/api/coding/paas/v4/
+  timeout: 300

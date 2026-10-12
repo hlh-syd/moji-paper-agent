@@ -1,0 +1,58 @@
+# ===== 密钥与环境 =====
+.env
+.env.*
+!.env.example
+*.key
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv*/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+
+# ===== 运行时数据（可重新生成 / 用户数据） =====
+# 向量库与知识图谱存储（--build-kb / RAG 入库自动重建）
+chroma_db/
+lightrag_storage/
+# 知识库源文件（ingestion 脚本联网重建）
+knowledge_base/
+# 用户项目画像 / 会话状态 / 参考文献上传
+projects/
+workspace/
+reference_papers/
+# 认证密钥（首次启动自动生成）
+workspace/auth_secret.key
+
+# ===== 日志 =====
+logs/
+*.log
+*.log.*
+
+# ===== 模型权重与训练产物（GB 级，勿入库） =====
+*.gguf
+*.safetensors
+*.bin
+distill_humanize/data/
+distill_humanize/outputs/
+distill_humanize/export/
+distill_humanize/checkpoints/
+distill_humanize/lora_out*/
+
+# ===== 工具缓存 =====
+.zcode/
+.claude/
+
+# ===== 操作系统 =====
+Thumbs.db
+desktop.ini
+.DS_Store
+docs/images/_*
+_patch_screenshot.py
