@@ -9,7 +9,14 @@ const ui = (() => {
      每项 { name, isOpen(), close() }，close 由调用方提供（移除 open class / 隐藏）。 */
   const layers = [];
   function layer(name, isOpen, close) {
-    if (!name || typeof isOpen !== "function") return () => {};
+    if (!name) return () => {};
+    // 兼容对象形式 {isOpen, close}（bindEscLayers 的 byId()/menuShow() 均返回对象；
+    // 曾因直接传对象被下方函数校验静默拒绝，整条 Esc 栈失效）
+    if (typeof isOpen === "object" && isOpen !== null) {
+      close = isOpen.close;
+      isOpen = isOpen.isOpen;
+    }
+    if (typeof isOpen !== "function") return () => {};
     layers.push({ name, isOpen, close: typeof close === "function" ? close : () => {} });
     // 返回注销函数
     return () => {

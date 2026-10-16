@@ -1082,6 +1082,9 @@ class SectionWriter:
         if n_h or n_p or n_s or n_dedup or n_mid:
             repair_notes.append(
                 f"去重：标题块{n_h}/相似段{n_p}/重复句{n_s}/逐字块{n_dedup}/句中交叠{n_mid}")
+        full, n_struct = self._strip_inline_struct_blocks(full)
+        if n_struct:
+            repair_notes.append(f"清除章内小结/参考文献块 {n_struct} 处")
         full, n_removed = self._sanitize_draft(full)
         if n_removed:
             repair_notes.append(f"清扫中间产物 {n_removed} 处")
@@ -1414,6 +1417,66 @@ class SectionWriter:
         r"^#{1,4}\s*(?:假设与缺失输入|缺失输入清单|假设清单|待补充清单|假设与缺口).*$", re.M)
     _SANITIZE_PROC_RE = re.compile(
         r"^(?:[-*•]?\s*)?(?:诊断|核查|复核|修订说明|执行说明|本轮修订|审查意见)\s*[:：][^\n]*$", re.M)
+
+    # 章内参考文献标题行（## 参考文献（本节引用）/ **References** 等形态）
+    _REF_HEAD_LINE_RE = re.compile(
+        r"^[ \t]*(?:#{1,4}[ \t]+|\*\*)[ \t]*(?:参考文献|引用文献|本节引用|References?)"
+        r"(?:（[^）]*）)?[^\n]*?(?:\*\*)?[ \t]*$")
+    # 引用池复述行：「见全文统一引用池编号：[1][2]…」/ 裸「[1][2][3]」清单行
+    _POOL_LINE_RE = re.compile(
+        r"^[ \t]*(?:[^\n\[\]]{0,24}[:：])?[ \t]*(?:\[\d{1,3}\][\s，,、]*){2,}$")
+    # 「本章/本节小结」标题行（正文保留，仅去标题）
+    _SUMMARY_HEADING_RE = re.compile(
+        r"^[ \t]*(?:#{1,4}[ \t]+|\*\*)[ \t]*(?:本章|本节|本章内容)?小结"
+        r"(?:[^\n*]*)(?:\*\*)?[ \t]*$")
+    # 标题行以「…与/和/及 本章小结」收尾（如「### 3.7 统计软件与本章小结」）→ 剥掉小结尾巴
+    _SUMMARY_TAIL_RE = re.compile(
+        r"^([ \t]*#{1,4}[ \t]+\S[^\n]*?)[与和及][ \t]*(?:本章|本节)小结[ \t]*(\**)[ \t]*$")
+
+    @classmethod
+    def _strip_inline_struct_blocks(cls, text: str):
+        """期刊体例保底清洗（LLM 各轮之后）：删除正文内 LLM 自行输出的
+        ①「参考文献/本节引用」标题块（含紧随的空行/引用池复述行/[n] 条目行）
+        ②孤立的引用池复述行 ③「本章/本节小结」标题行（正文保留，仅去标题）。
+        文末统一参考文献列表由 export_md/export_docx 的 compose_references_section
+        生成，不受影响。返回 (清洗后文本, 删除块计数)。"""
+        if not text:
+            return text, 0
+        lines = text.split("\n")
+        out, removed = [], 0
+        ref_item = re.compile(r"^[ \t]*\[\d{1,3}\][^\n]*$")
+        i, n = 0, len(lines)
+        while i < n:
+            ln = lines[i]
+            if cls._REF_HEAD_LINE_RE.match(ln):
+                removed += 1
+                i += 1
+                # 吞并标题块紧随的空行/引用池行/[n] 条目行（至首个正文行止）
+                while i < n and (not lines[i].strip()
+                                 or cls._POOL_LINE_RE.match(lines[i])
+                                 or ref_item.match(lines[i])):
+                    if lines[i].strip():
+                        removed += 1
+                    i += 1
+                continue
+            if cls._POOL_LINE_RE.match(ln):
+                removed += 1
+                i += 1
+                continue
+            if cls._SUMMARY_HEADING_RE.match(ln):
+                removed += 1
+                i += 1
+                continue
+            m_tail = cls._SUMMARY_TAIL_RE.match(ln)
+            if m_tail:
+                out.append(m_tail.group(1) + (m_tail.group(2) or ""))
+                removed += 1
+                i += 1
+                continue
+            out.append(ln)
+            i += 1
+        text = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+        return text, removed
 
     @classmethod
     def _sanitize_draft(cls, text: str):

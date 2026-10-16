@@ -153,10 +153,9 @@
                  data-placeholder="继续输入，或让助手基于已注入文件讨论…"></div>
             <div class="composer-bar">
               <button class="btn-mini" id="btnClearSession" title="清空当前会话的全部消息与附件">🧹 清空</button>
-              <span class="composer-hint" id="composerHint">Enter 换行 · Ctrl+Enter 发送</span>
-              <span class="spacer"></span>
-              <span class="composer-chip" id="composerModel" title="当前写作模型">GLM</span>
-              <button class="send" id="btnSend" title="发送">发送</button>
+                <span class="composer-hint" id="composerHint">Enter 换行 · Ctrl+Enter 发送</span>
+                <span class="spacer"></span>
+                <button class="send" id="btnSend" title="发送">发送</button>
             </div>
           </div>
         </section>
@@ -463,7 +462,7 @@
       <button class="sp-nav-item" data-sp="model"><span class="sp-nav-ico">◈</span>模型设置</button>
       <button class="sp-nav-item" data-sp="keys"><span class="sp-nav-ico">⌨</span>键盘快捷键</button>
       <div class="sp-group">外部服务</div>
-      <button class="sp-nav-item" data-sp="model"><span class="sp-nav-ico">🛡</span>AI 检测（朱雀）</button>
+      <button class="sp-nav-item" data-sp="zhuque"><span class="sp-nav-ico">🛡</span>AI 检测（朱雀）</button>
     </aside>
     <div class="sp-content" id="spContent">
       <div class="sp-scroll">
@@ -504,7 +503,7 @@
             <div class="sp-row">
               <div class="sp-txt"><div class="sp-label">界面字号</div>
                 <div class="sp-desc">调整应用界面的文字大小，图标和布局尺寸不受影响。</div></div>
-              <div class="sp-ctl sp-num"><input type="number" id="spUiFont" min="12" max="18" step="1" value="14"><span class="sp-unit">px</span></div>
+              <div class="sp-ctl sp-num"><input type="number" id="spUiFont" min="12" max="24" step="0.1" value="14"><span class="sp-unit">px</span></div>
             </div>
             <div class="sp-row">
               <div class="sp-txt"><div class="sp-label">发送键</div>
@@ -579,16 +578,28 @@
               <div class="sp-desc">单次响应上限；大纲 / 长文生成建议 ≥ 8192</div></div>
               <div class="sp-ctl sp-num"><input type="number" data-set="max_tokens" min="4096" max="65536" step="1024" class="sp-input" style="width:110px;"></div></div>
           </div>
-          <div class="sp-h2">AI 检测（朱雀）</div>
-          <div class="set-card">
-            <div class="sp-row"><div class="sp-txt"><div class="sp-label">朱雀 API Key</div>
-              <div class="sp-desc" id="settingsZhuqueHint">腾讯朱雀 AI 检测（AI 检测中心使用）· 月免费 50 万 token · 保存后立即生效</div></div>
-              <div class="sp-ctl"><input type="password" data-set="zhuque_key" id="settingsZhuqueKey" class="sp-input" style="width:230px;" placeholder="留空=不修改" autocomplete="off"></div></div>
-          </div>
           <div class="sp-actions">
             <span class="uw-foot-note">主模型 / 温度等保存后立即应用于后续生成任务</span>
             <button class="btn-mini" id="settingsCancel">取消</button>
             <button class="btn-mini primary" id="settingsSave">保存并生效</button>
+          </div>
+        </section>
+
+        <section class="sp-section" data-sp="zhuque">
+          <h2 class="sp-h1">AI 检测（朱雀）</h2>
+          <div class="sp-h2sub">腾讯朱雀官方检测 API（EdgeOne 网关）· 整篇 / 逐节 / 上传文档检测共用 · 月免费 50 万 token</div>
+          <div class="set-card">
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">朱雀 API Key</div>
+              <div class="sp-desc" id="settingsZhuqueHint">EdgeOne 控制台创建 · 保存后立即生效（无需重启）</div></div>
+              <div class="sp-ctl"><input type="password" data-set="zhuque_key" id="settingsZhuqueKey" class="sp-input" style="width:230px;" placeholder="留空=不修改" autocomplete="off"></div></div>
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">当前状态</div>
+              <div class="sp-desc">Key 配置状态在此显示；未配置时 AI 检测中心自动降级为本地 BERT 引擎</div></div>
+              <div class="sp-ctl"><span class="sp-chip" id="zhuqueStateChip">检查中…</span></div></div>
+          </div>
+          <div class="sp-actions">
+            <span class="uw-foot-note">Key 仅存于本机 .env，不入库不入仓</span>
+            <button class="btn-mini" id="zhuqueCancel">取消</button>
+            <button class="btn-mini primary" id="zhuqueSave">保存并生效</button>
           </div>
         </section>
 

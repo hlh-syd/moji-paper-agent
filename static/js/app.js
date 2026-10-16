@@ -186,6 +186,7 @@ const state = {
   activeSession: -1,
   sbView: "main",       // 侧栏会话视图：main=进行中 | archived=归档
   sbQuery: "",          // 侧栏会话搜索词
+  hiddenProjects: [],   // 前端隐藏的项目名（随工作区状态持久化，只影响显示）
   outline: null,
   templates: {},
   template: "chinese_journal",  // 论文结构模板 key
@@ -726,6 +727,10 @@ function ensureSettingsModal() {
     page.querySelector("#settingsSave")?.addEventListener("click", saveSettings);
     page.querySelector("#settingsCancel")?.addEventListener("click", () =>
       page.classList.remove("open"));
+    // 朱雀独立分区的保存/取消（同一保存流：saveSettings 汇总全部 data-set 字段）
+    page.querySelector("#zhuqueSave")?.addEventListener("click", saveSettings);
+    page.querySelector("#zhuqueCancel")?.addEventListener("click", () =>
+      page.classList.remove("open"));
     page.querySelector("#spBack")?.addEventListener("click", () =>
       page.classList.remove("open"));
     page.querySelectorAll(".sp-nav-item").forEach((item) => {
@@ -820,7 +825,7 @@ function bindPagePrefs() {
     scheduleSave();  // 主题同时进工作区状态
   });
   $("#spUiFont")?.addEventListener("change", (e) =>
-    saveUiPrefs({ uiFont: Math.min(18, Math.max(12, Number(e.target.value) || 14)) }));
+    saveUiPrefs({ uiFont: Math.min(24, Math.max(12, Number(e.target.value) || 14)) }));
   $("#spCodeFont")?.addEventListener("change", (e) =>
     saveUiPrefs({ codeFont: Math.min(16, Math.max(10, Number(e.target.value) || 12.5)) }));
   $("#spLineNums")?.addEventListener("change", (e) =>
@@ -875,6 +880,16 @@ function fillSettingsForm(d) {
     zkInput.placeholder = zqState.configured
       ? `已配置（${zqState.masked}）· 留空保持不变`
       : "粘贴 EdgeOne API Key（未配置）";
+  }
+  // 朱雀分区状态徽标
+  const zkChip = SET.modal.querySelector("#zhuqueStateChip");
+  if (zkChip) {
+    zkChip.textContent = zqState.configured
+      ? `✓ 已配置（${zqState.masked}）` : "✗ 未配置（本地引擎可用）";
+    zkChip.style.color = zqState.configured ? "var(--green)" : "var(--orange)";
+    zkChip.style.borderColor = zqState.configured
+      ? "color-mix(in srgb, var(--green) 40%, transparent)"
+      : "color-mix(in srgb, var(--orange) 40%, transparent)";
   }
   q("embedding").value = d.models.embedding;
   q("temperature").value = d.models.temperature;
@@ -1558,11 +1573,25 @@ async function restoreWorkspace(ws) {
     renderSessionBar();
     renderChat();
   }
+  if (Array.isArray(st.hidden_projects)) {
+    state.hiddenProjects = st.hidden_projects.filter((n) => typeof n === "string");
+  }
   if (st.active_project) {
     const known = (state.projects.registered || []).find(r => r.name === st.active_project)
       || (state.projects.candidates || []).find(c => c.name === st.active_project);
     if (known) await selectProject(st.active_project, known.path, true, true);
   }
+  // 隐藏项目（旧版 localStorage 记录迁移到工作区状态）
+  if (!state.hiddenProjects.length) {
+    try {
+      const legacy = JSON.parse(localStorage.getItem("moji.hiddenProjects")) || [];
+      if (Array.isArray(legacy) && legacy.length) {
+        state.hiddenProjects = legacy;
+        scheduleSave();
+      }
+    } catch (e) { /* ignore */ }
+  }
+  renderProjects();
 }
 
 let _wsSaveTimer = null;
@@ -1585,6 +1614,7 @@ async function saveWorkspaceNow(keepalive) {
           pinned: !!s.pinned, pinnedAt: s.pinnedAt || null,
           archived: !!s.archived, archivedAt: s.archivedAt || null,
         })),
+        hidden_projects: state.hiddenProjects || [],
         theme: document.body.dataset.theme || "dark",
         paper_style: state.paperStyle || { ...PAPER_STYLE_DEFAULTS },
         pane_widths: {
@@ -1748,19 +1778,22 @@ async function loadProjects() {
   } catch (e) { toast(`项目列表加载失败: ${e.message}`, "err"); }
 }
 
-/* ---------- 项目列表隐藏（纯前端）：右键隐藏，仅影响显示，后端注册数据不动 ---------- */
-const HIDDEN_PROJECTS_KEY = "moji.hiddenProjects";
+/* ---------- 项目列表过滤（纯前端显示，后端注册数据/画像/大纲不受影响） ----------
+   FRONTEND_HIDDEN_PROJECTS：硬编码永久不显示的项目条目（无视工作区状态）；
+   state.hiddenProjects：用户右键手动隐藏的（可经底部入口恢复），随工作区状态持久化 */
+const FRONTEND_HIDDEN_PROJECTS = ["论文智能体"];
 function hiddenProjects() {
-  try { return JSON.parse(localStorage.getItem(HIDDEN_PROJECTS_KEY)) || []; }
-  catch (e) { return []; }
+  return state.hiddenProjects || [];
 }
 function setHiddenProjects(list) {
-  try { localStorage.setItem(HIDDEN_PROJECTS_KEY, JSON.stringify(list)); } catch (e) { /* 隐私模式等 */ }
+  state.hiddenProjects = list || [];
+  scheduleSave();
 }
 
 function renderProjects() {
   const box = $("#projectList");
-  const hidden = new Set(hiddenProjects());
+  const userHidden = new Set(hiddenProjects());
+  const hidden = new Set([...FRONTEND_HIDDEN_PROJECTS, ...userHidden]);
   const registered = (state.projects.registered || []).filter((p) => !hidden.has(p.name));
   const candidates = (state.projects.candidates || []).filter((c) => !hidden.has(c.name));
   if (!registered.length && !candidates.length) {
@@ -1782,8 +1815,8 @@ function renderProjects() {
         <span class="badge">${c.python_scripts}脚本</span>
       </div>`;
     }
-    if (hidden.size) {
-      html += `<div class="project-restore" id="btnRestoreProjects" title="取消隐藏，恢复全部条目">已隐藏 ${hidden.size} 个项目 · 恢复显示</div>`;
+    if (userHidden.size) {
+      html += `<div class="project-restore" id="btnRestoreProjects" title="取消隐藏，恢复全部条目">已隐藏 ${userHidden.size} 个项目 · 恢复显示</div>`;
     }
     box.innerHTML = html;
     box.querySelectorAll(".project-item").forEach((el) => {

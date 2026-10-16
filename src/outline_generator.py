@@ -20,7 +20,7 @@ from src import scoping
 
 logger = logging.getLogger(__name__)
 
-# 判定「章式节」的关键词：需要拆二级小节并补「本章小结」的章
+# 判定「章式节」的关键词：需要拆二级小节的章
 _CHAPTERY_KEYWORDS = ("材料与方法", "方法", "结果", "发现", "前言", "讨论", "实验")
 
 PROJECTS_DIR = scoping.legacy_projects_dir()  # 兼容旧引用；读写一律走 scoping.projects_dir()
@@ -229,7 +229,7 @@ class OutlineGenerator:
     def _normalize_subsections(cls, parent_id: str, raw, chapter_target: int,
                                chapter_title: str) -> list:
         """LLM 输出的 subsections → 规范对象树（两级为主、方法/结果可三级）。
-        字符串条目自动转对象；小节字数与章目标对齐；章式节补「本章小结」。"""
+        字符串条目自动转对象；小节字数与章目标对齐。"""
         if not isinstance(raw, list):
             return []
         subs = []
@@ -254,11 +254,8 @@ class OutlineGenerator:
         subs = uniq
         if not subs:
             return []
-        # 章式节补本章小结
-        if cls._is_chaptery(chapter_title) \
-                and not any("小结" in s["title"] for s in subs):
-            subs.append({"title": "本章小结", "target_words": 300, "key_points": [],
-                         "subsections": []})
+        # 注：期刊 IMRaD 论文不设「本章小结」（总结只在全文最后的结论章），
+        # 不再为章式节自动补充小结小节——曾经在这里硬编码追加
         # 字数分配：有给的用，缺失/总和偏差大则按比例归一到章目标
         given = []
         for s in subs:
@@ -389,8 +386,9 @@ class OutlineGenerator:
                            f"「{'、'.join(result_secs)}」各章必须拆分 4-7 个二级小节（subsections），\n"
                            "  每个小节目标字数之和≈章目标字数；内容复杂的小节可再嵌套 2-4 个三级小节；\n"
                            "  摘要/结论不拆小节。方法类章与结果类章的小节必须**镜像对应**\n"
-                           "  （如方法「2.4 建模策略」↔结果「3.2 建模结果」），两章的最后一个小节固定为"
-                           "「本章小结」（200-400字）\n")
+                           "  （如方法「2.4 建模策略」↔结果「3.2 建模结果」）。"
+                           "**禁止**任何章设置「本章小结/本节小结」类小节（期刊论文体例："
+                           "总结只出现在全文最后的结论章，参考文献列表由系统在文末统一生成）\n")
         else:
             mirror_note = ("- **多级小节结构（重要）**：正文核心章必须拆分 4-7 个二级小节（subsections），"
                            "每个小节目标字数之和≈章目标字数；摘要/结论不拆小节\n")
