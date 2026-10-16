@@ -34,23 +34,62 @@ _load_failed = False
 
 
 def _load(lang: str):
-    """懒加载对应语言的分类 pipeline（线程级单例；失败全局降级）"""
+    """懒加载对应语言的分类 pipeline（线程级单例；失败全局降级）。
+    已缓存模型强制离线加载：部分 huggingface_hub 版本即使 local_files_only=True
+    仍会做联网 etag 校验（断网时 5 轮重试 ≈ 4 分钟，曾把 SSE 复检拖死）；
+    本地加载失败再回退联网（首装下载路径）"""
     global _load_failed
     if _load_failed:
         return None
     if lang not in _pipelines:
         from transformers import pipeline as hf_pipeline
         try:
-            _pipelines[lang] = hf_pipeline(
-                "text-classification", model=_MODELS[lang],
-                device=-1, truncation=True,
-            )
+            with _force_offline():
+                try:
+                    # 不给 pipeline 传 local_files_only：会经 **kwargs 落到每次
+                    # tokenizer() 调用上（TypeError）。离线语义由 _force_offline 保证
+                    _pipelines[lang] = hf_pipeline(
+                        "text-classification", model=_MODELS[lang],
+                        device=-1, truncation=True,
+                    )
+                except Exception:
+                    pass  # 缓存缺失 → 出离线模式走在线下载
+            if lang not in _pipelines:
+                _pipelines[lang] = hf_pipeline(
+                    "text-classification", model=_MODELS[lang],
+                    device=-1, truncation=True,
+                )
             logger.info("AIGC 检测模型已加载(%s): %s", lang, _MODELS[lang])
         except Exception as e:
             _load_failed = True
             logger.warning("AIGC 检测模型不可用（模型检测降级关闭）: %s", e)
             return None
     return _pipelines[lang]
+
+
+class _force_offline:
+    """加载期间临时置 huggingface_hub/transformers 为离线模式，结束后还原"""
+
+    def __enter__(self):
+        import os
+        from huggingface_hub import constants as _c
+        self._env = (os.environ.get("HF_HUB_OFFLINE"), os.environ.get("TRANSFORMERS_OFFLINE"))
+        self._const = _c.HF_HUB_OFFLINE
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        _c.HF_HUB_OFFLINE = True
+        return self
+
+    def __exit__(self, *exc):
+        import os
+        from huggingface_hub import constants as _c
+        for k, v in zip(("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"), self._env):
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        _c.HF_HUB_OFFLINE = self._const
+        return False
 
 
 def _lang_of(text: str) -> str:

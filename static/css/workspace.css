@@ -86,7 +86,10 @@ body[data-theme="paper"] .ws-tab.active {
 .ws-view { flex: 1; min-width: 0; min-height: 0; display: none; flex-direction: column; }
 .ws-view.active { display: flex; }
 .ws-view[data-ws-view="outline"] { overflow-y: auto; }
-.ws-view[data-ws-view="paper"] .paper-main { flex: 1; min-width: 0; display: flex; position: relative; }
+/* 滚动修复：paper-main 必须可收缩（min-height:0），否则长文把它撑高，
+   .paper-view 的 overflow-y:auto 拿不到受限高度 → 论文/大纲区整体无法滚动 */
+.ws-view[data-ws-view="paper"] { overflow: hidden; }
+.ws-view[data-ws-view="paper"] .paper-main { flex: 1; min-width: 0; min-height: 0; display: flex; position: relative; }
 #reviewSlot { padding: 0 14px 18px; flex: 0 0 auto; }
 
 /* 全文进度条：固定在头部下方的条带（不占内容滚动区） */

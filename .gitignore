@@ -56,3 +56,4 @@ desktop.ini
 .DS_Store
 docs/images/_*
 _patch_screenshot.py
+uploads/

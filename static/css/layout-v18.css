@@ -179,7 +179,7 @@ body[data-theme="paper"] .dual-chat .msg.assistant { background: transparent; }
 
 /* ---------- 论文 Tab：paper-main + taskpanel ---------- */
 .paper-layout { flex: 1; display: flex; min-height: 0; }
-.paper-main { flex: 1; min-width: 0; display: flex; position: relative; }
+.paper-main { flex: 1; min-width: 0; min-height: 0; display: flex; position: relative; }
 .taskpanel {
   width: 332px; flex: 0 0 332px; overflow: hidden; display: flex; flex-direction: column;
   border-left: 1px solid var(--border); background: var(--bg-panel);
@@ -303,3 +303,81 @@ body[data-theme="paper"] .dual-chat .msg.assistant { background: transparent; }
   padding: 26px 16px; text-align: center; font-size: 12.5px;
   color: var(--orange); line-height: 2;
 }
+
+/* ============================================================
+   v26 · 侧栏复用面板：会话列表 / 项目与文件 / 知识库
+   点侧栏按钮时在 252px 侧栏列表区原地切换（data-pane 驱动）
+   ============================================================ */
+.sb-action.active {
+  background: var(--accent-soft); color: var(--accent); font-weight: 600;
+}
+/* 面板激活时隐藏会话组头 + 会话列表 */
+.sidebar[data-pane] .sb-group-head,
+.sidebar[data-pane] .sb-list { display: none; }
+.sb-pane {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  animation: fadeIn var(--dur-fast) var(--ease);
+}
+.sb-pane[hidden] { display: none; }   /* hidden 属性必须显式生效：作者样式会覆盖 UA 的 display:none */
+.sbp-head {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.sbp-title { font-weight: 700; font-size: 13px; letter-spacing: 0.3px; }
+.sbp-head-acts { display: flex; align-items: center; gap: 10px; }
+.sbp-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 12px 16px; }
+.sbp-acts {
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 2px 10px;
+}
+.cp-act { font-size: 11.5px; color: var(--accent); cursor: pointer; white-space: nowrap; }
+.cp-act:hover { text-decoration: underline; }
+.cp-label {
+  font-size: 10.5px; color: var(--text-faint); text-transform: uppercase;
+  letter-spacing: 1px; margin: 4px 2px 8px;
+}
+.cp-label-sub { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 4px; }
+
+/* 知识库面板：紧凑卡片（252px 侧栏宽度） */
+.sbp-body-kb { display: flex; flex-direction: column; gap: 9px; }
+.sbp-body-kb .kb-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 13px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-elev);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.sbp-body-kb .kb-row:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-1);
+}
+.sbp-body-kb .kb-name { flex: 1; font-size: 12.5px; font-weight: 600; min-width: 0; }
+.sbp-body-kb .kb-count {
+  flex: none;
+  font-size: 11px; color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  background: var(--accent-soft); border-radius: 99px; padding: 2px 9px;
+  white-space: nowrap;
+}
+.sbp-body-kb .kb-hint {
+  font-size: 11px; color: var(--text-faint); line-height: 1.7;
+  padding: 8px 2px 0;
+}
+
+/* ---------- 侧栏会话：全部/归档 视图切换 ---------- */
+.sb-viewtabs { display: flex; gap: 2px; padding: 2px; background: var(--wash-1); border: 1px solid var(--wash-2); border-radius: 8px; }
+.sb-viewtabs button {
+  border: none; background: transparent; color: var(--text-faint);
+  font-size: 10.5px; font-family: inherit; padding: 2px 9px;
+  border-radius: 6px; cursor: pointer; letter-spacing: 0; text-transform: none;
+  transition: all var(--dur-fast) var(--ease);
+}
+.sb-viewtabs button:hover { color: var(--text); }
+.sb-viewtabs button.active { background: var(--bg-elev); color: var(--accent); font-weight: 600; }
+
+/* ---------- 会话置顶/归档 ---------- */
+.sb-item.pinned .sb-item-name { font-weight: 600; }
+.sb-pin-flag { flex: none; font-size: 10px; line-height: 1; }
+.sb-act.on { color: var(--accent); }

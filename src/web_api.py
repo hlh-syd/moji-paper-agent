@@ -8,6 +8,7 @@ Web API 模块（论文写作智能体）
   - 分节：/api/sections（重生成-流式/自查）
   - 会话：/api/chat（流式问答，支持文件注入）
   - 对话管理：/api/conversation/*
+  - 文档查重：/api/doccheck（上传→三引擎检测→9B改写→自动复检→下载）
 """
 import asyncio
 import json
@@ -634,14 +635,17 @@ def create_app() -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def root():
         html = Path("templates/index.html").read_text(encoding="utf-8")
-        # 静态资源缓存击穿：版本号按文件 mtime 动态生成（改版即换 URL，浏览器永不残留旧缓存）
-        try:
-            js_v = int(Path("static/js/app.js").stat().st_mtime)
-            css_v = int(Path("static/css/styles.css").stat().st_mtime)
-            html = re.sub(r"(app\.js)\?v=\d+", rf"\1?v={js_v}", html)
-            html = re.sub(r"(styles\.css)\?v=\d+", rf"\1?v={css_v}", html)
-        except OSError:
-            pass
+        # 静态资源缓存击穿：版本号按文件 mtime 动态生成（改版即换 URL，浏览器永不残留旧缓存）。
+        # 覆盖全部本地 css/js——此前只换 app.js/styles.css，layout-v18.css 等写死 ?v=NN 的
+        # 文件在个别浏览器缓存策略下会滞留旧样式
+        def _bump(match: re.Match) -> str:
+            path = match.group(2)
+            try:
+                v = int(Path(path.lstrip("/")).stat().st_mtime)
+            except OSError:
+                v = 0
+            return f'{match.group(1)}{path}?v={v}"'
+        html = re.sub(r'((?:src|href)=")(/static/(?:css|js)/[^"?]+)\?v=\d+"', _bump, html)
         return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/health", response_model=HealthCheck)
@@ -1628,6 +1632,157 @@ def create_app() -> FastAPI:
             logger.warning("朱雀检测失败（忽略）: %s", e)
             report["zhuque_check"] = None
         return report
+
+    # ---------- 上传文档 AI 查重（doccheck：上传 → 三引擎检测 → 9B 改写 → 自动复检） ----------
+    class DocDetectRequest(BaseModel):
+        doc_id: str = Field(..., description="上传接口返回的文档 id")
+
+    class DocRewriteRequest(BaseModel):
+        doc_id: str
+        paras: List[int] = Field(..., description="要改写的段落下标（可多选）")
+
+    def _public_doc(doc: dict) -> dict:
+        paras = doc.get("paragraphs") or []
+        return {"id": doc["id"], "filename": doc["filename"], "ext": doc.get("ext"),
+                "uploaded_at": doc.get("uploaded_at"),
+                "paras": len(paras), "chars": sum(len(p) for p in paras),
+                "previews": [p.strip()[:110] for p in paras],
+                "history": doc.get("history", [])[-8:]}
+
+    @app.post("/api/doccheck/upload")
+    async def doccheck_upload(file: UploadFile = File(...)):
+        """上传待检测文档（word/docx、txt、md、pdf）：提取文本并切分段落（检测单独触发）"""
+        from src import doc_check
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in doc_check.ALLOWED_EXTS:
+            hint = "Word 老格式请另存为 .docx 后上传" if ext == ".doc" else \
+                f"仅支持 {', '.join(sorted(doc_check.ALLOWED_EXTS))}"
+            raise HTTPException(status_code=400,
+                                detail=f"不支持的格式「{ext or '无扩展名'}」：{hint}")
+        data = await file.read()
+        if len(data) > doc_check.MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=400, detail="文件超过 20MB")
+        import uuid as _uuid
+        token = _uuid.uuid4().hex[:10]
+        try:
+            text = await asyncio.to_thread(doc_check.extract_upload, data,
+                                            file.filename, token)
+            doc = await asyncio.to_thread(doc_check.create_doc, file.filename, text)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        obs.log_span("doccheck.upload", kind="node",
+                     in_={"name": file.filename, "bytes": len(data)},
+                     out={"paras": len(doc["paragraphs"]),
+                          "chars": sum(len(p) for p in doc["paragraphs"])})
+        return {"ok": True, "doc": _public_doc(doc),
+                "humanize": await asyncio.to_thread(doc_check.humanize_status)}
+
+    @app.get("/api/doccheck/doc/{doc_id}")
+    async def doccheck_get(doc_id: str):
+        from src import doc_check
+        try:
+            doc = doc_check.load_doc(doc_id)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        return {"doc": _public_doc(doc), "report": doc.get("report"),
+                "humanize": await asyncio.to_thread(doc_check.humanize_status)}
+
+    @app.post("/api/doccheck/detect")
+    async def doccheck_detect(req: DocDetectRequest):
+        """三引擎 AI 查重：朱雀官方 API（合并口径）+ 本地 BERT + 启发式，附段落级评分"""
+        from src import doc_check
+        try:
+            doc = doc_check.load_doc(req.doc_id)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        report = await asyncio.to_thread(doc_check.detect_doc, doc)
+        doc["report"] = report
+        doc_check.save_doc(doc)
+        return {"ok": True, "report": report, "doc": _public_doc(doc)}
+
+    @app.post("/api/doccheck/rewrite")
+    async def doccheck_rewrite(req: DocRewriteRequest):
+        """选段 9B 改写（SSE 流式）：逐段 humanize-9b 改写 → 自动复检 → 返回新报告"""
+        from src import doc_check
+        try:
+            doc = doc_check.load_doc(req.doc_id)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        if not req.paras:
+            raise HTTPException(status_code=400, detail="未选择要改写的段落")
+        hs = await asyncio.to_thread(doc_check.humanize_status)
+        if not hs.get("available"):
+            raise HTTPException(status_code=409,
+                                detail=f"微调 9B 模型不可用：{hs.get('hint') or '请启动 Ollama'}")
+
+        async def gen():
+            def sse(ev: dict) -> str:
+                return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+            loop = asyncio.get_running_loop()
+            queue: asyncio.Queue = asyncio.Queue()
+
+            def _on_event(kind: str, payload: dict) -> None:
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": kind, **payload})
+
+            async def _run():
+                try:
+                    result = await asyncio.to_thread(
+                        doc_check.rewrite_paragraphs, doc, req.paras, _on_event)
+                    queue.put_nowait({"type": "_result", "result": result})
+                except Exception as e:  # noqa: BLE001
+                    queue.put_nowait({"type": "_error", "error": str(e)})
+
+            task = asyncio.get_running_loop().create_task(_run())
+            result = None
+            while True:
+                ev = await queue.get()
+                if ev["type"] == "_result":
+                    result = ev["result"]
+                    break
+                if ev["type"] == "_error":
+                    yield sse({"type": "error", "content": f"改写失败：{ev['error']}"})
+                    yield "data: [DONE]\n\n"
+                    return
+                yield sse(ev)
+            del task  # 已完结；防 GC 警告
+            yield sse({"type": "status", "content": "改写完成，正在自动复检（朱雀+本地双引擎）…"})
+            # 复检放线程池，每 15 秒发心跳：SSE 静默超时（前端看门狗 120 秒）不再误杀慢复检
+            detect_task = asyncio.get_running_loop().create_task(
+                asyncio.to_thread(doc_check.detect_doc, doc))
+            report = None
+            while not detect_task.done():
+                try:
+                    report = await asyncio.wait_for(asyncio.shield(detect_task), timeout=15)
+                except asyncio.TimeoutError:
+                    yield sse({"type": "status",
+                               "content": "复检中…（本地引擎加载/朱雀请求耗时较长，请稍候）"})
+            if detect_task.exception():
+                raise detect_task.exception()
+            report = detect_task.result()
+            doc["report"] = report
+            doc_check.save_doc(doc)
+            yield sse({"type": "recheck", "report": report})
+            yield sse({"type": "done", "changed": result["changed"],
+                       "failed": result["failed"], "doc": _public_doc(doc)})
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+
+    @app.get("/api/doccheck/doc/{doc_id}/download")
+    async def doccheck_download(doc_id: str, fmt: str = Query("auto", pattern="^(auto|txt|docx)$")):
+        """下载（改写后）文档：auto=按原格式（docx→docx，其余 txt）"""
+        from src import doc_check
+        try:
+            doc = doc_check.load_doc(doc_id)
+            path = await asyncio.to_thread(doc_check.export_doc, doc, fmt)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return FileResponse(str(path), filename=f"{Path(doc['filename']).stem}_改写版{path.suffix}")
 
     @app.post("/api/sections/enhance")
     async def sections_enhance(req: EnhanceRequest):

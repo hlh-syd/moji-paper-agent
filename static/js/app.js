@@ -184,6 +184,8 @@ const state = {
   currentProject: null,
   sessions: [],
   activeSession: -1,
+  sbView: "main",       // 侧栏会话视图：main=进行中 | archived=归档
+  sbQuery: "",          // 侧栏会话搜索词
   outline: null,
   templates: {},
   template: "chinese_journal",  // 论文结构模板 key
@@ -913,8 +915,9 @@ async function saveSettings() {
   }
 }
 
-/* ================= AI 检测中心（v21）：整篇/逐节送检 + 报告导出 ================= */
-const AIC = { modal: null, running: false, lastReport: null };
+/* ================= AI 检测中心（v22）：整篇/逐节/上传文档送检 + 9B改写复检 + 报告导出 ================= */
+const AIC = { modal: null, running: false, lastReport: null,
+              doc: null, humanize: null, docReport: null, recheck: null, rewriting: false };
 
 function ensureAiCenterModal() {
   if (AIC.modal) return;
@@ -922,10 +925,10 @@ function ensureAiCenterModal() {
   modal.id = "aiCenterModal";
   modal.className = "uw-overlay";
   modal.innerHTML =
-    '<div class="uw-dialog" style="width:min(640px,94vw);height:auto;min-height:0;">'
+    '<div class="uw-dialog" style="width:min(780px,94vw);height:auto;min-height:0;max-height:92vh;">'
     + '<div class="uw-head"><div class="uw-head-main">'
     + '<div class="uw-head-title">🛡 AI 检测中心</div>'
-    + '<div class="uw-head-sub">朱雀官方 API（腾讯·月免费50万token）+ 本地 BERT 双引擎 · 支持报告导出</div></div>'
+    + '<div class="uw-head-sub">朱雀官方 API（腾讯·月免费50万token）+ 本地 BERT 双引擎 · 上传文档可 9B 改写复检</div></div>'
     + '<button class="btn-mini" id="aicClose">✕</button></div>'
     + '<div class="uw-content">'
     + '<div class="set-group-title">检测范围</div>'
@@ -934,6 +937,18 @@ function ensureAiCenterModal() {
     + '<span class="aic-mode-name">📄 整篇检测</span><span class="aic-mode-sub">全文一次送检（朱雀合并口径=网页版算法），约 20~60 秒</span></label>'
     + '<label class="aic-mode"><input type="radio" name="aicMode" value="sections">'
     + '<span class="aic-mode-name">📑 逐节检测</span><span class="aic-mode-sub">每节独立三引擎体检，定位薄弱章节，约 1~3 分钟</span></label>'
+    + '<label class="aic-mode"><input type="radio" name="aicMode" value="upload">'
+    + '<span class="aic-mode-name">📁 上传文档检测</span><span class="aic-mode-sub">word/txt 上送三引擎查重，选中段落用微调 9B 模型改写并自动复检</span></label>'
+    + '</div>'
+    + '<div class="aic-upload-box" id="aicUploadBox" style="display:none;">'
+    + '<input type="file" id="aicFileInput" accept=".docx,.txt,.md,.pdf" style="display:none;">'
+    + '<div class="aic-up-empty" id="aicUpEmpty">'
+    + '<div class="aic-up-ico">📄</div>'
+    + '<div class="aic-up-title">上传 Word / 文本文档</div>'
+    + '<div class="aic-up-sub">支持 .docx / .txt / .md / .pdf · 单文件 ≤ 20MB · 文档仅保存在本机</div>'
+    + '<button class="btn-mini primary" id="aicPick">📎 选择文件</button>'
+    + '</div>'
+    + '<div class="aic-doc-meta" id="aicDocMeta" style="display:none;"></div>'
     + '</div>'
     + '<div class="aic-zhuque-state" id="aicZhuqueState"></div>'
     + '<div class="aic-result" id="aicResult"></div>'
@@ -941,7 +956,8 @@ function ensureAiCenterModal() {
     + '</div>'
     + '<div class="uw-foot">'
     + '<span class="uw-foot-note" id="aicNote">检测只读，不修改论文任何内容</span>'
-    + '<button class="btn-mini" id="aicExport" style="display:none;">📥 导出报告</button>'
+    + '<button class="btn-mini" id="aicDownload" style="display:none;" title="下载（改写后）文档：按原格式，未改写段落原样保留">📥 下载改写文档</button>'
+    + '<button class="btn-mini" id="aicExport" style="display:none;">📊 导出报告</button>'
     + '<button class="btn-mini primary" id="aicRun">🚀 开始检测</button>'
     + '</div></div>';
   document.body.appendChild(modal);
@@ -949,13 +965,37 @@ function ensureAiCenterModal() {
   modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.remove("open"); });
   modal.querySelector("#aicRun").addEventListener("click", runAiCenter);
   modal.querySelector("#aicExport").addEventListener("click", exportAiReport);
+  modal.querySelector("#aicPick").addEventListener("click", () =>
+    modal.querySelector("#aicFileInput").click());
+  modal.querySelector("#aicFileInput").addEventListener("change", (e) => {
+    uploadDocCheckFile(e.target.files?.[0]);
+    e.target.value = "";
+  });
+  modal.querySelector("#aicDownload").addEventListener("click", downloadDocChecked);
+  modal.addEventListener("change", (e) => {
+    if (e.target.name === "aicMode") syncAicMode();
+  });
   AIC.modal = modal;
+}
+
+function syncAicMode() {
+  const mode = aicModeValue();
+  AIC.modal.querySelector("#aicUploadBox").style.display = mode === "upload" ? "" : "none";
+  const note = AIC.modal.querySelector("#aicNote");
+  note.textContent = mode !== "upload" ? "检测只读，不修改论文任何内容"
+    : (AIC.doc ? `已加载《${AIC.doc.filename}》· ${AIC.doc.paras} 段 · ${AIC.doc.chars} 字`
+               : "上传文档后开始检测；改写仅作用于勾选段落，其余原样保留");
+}
+
+function aicModeValue() {
+  return AIC.modal.querySelector('input[name="aicMode"]:checked').value;
 }
 
 async function openAiCenter() {
   ensureAiCenterModal();
   AIC.modal.classList.add("open");
   refreshAicZhuqueState();
+  syncAicMode();
 }
 
 async function refreshAicZhuqueState() {
@@ -970,16 +1010,106 @@ async function refreshAicZhuqueState() {
   } catch (e) { el.textContent = ""; }
 }
 
+/* ---------- 上传文档（word/txt/md/pdf）→ 解析段落 ---------- */
+async function uploadDocCheckFile(file) {
+  if (!file) return;
+  const meta = AIC.modal.querySelector("#aicDocMeta");
+  const empty = AIC.modal.querySelector("#aicUpEmpty");
+  empty.style.display = "none";
+  meta.style.display = "";
+  meta.innerHTML = '<span class="ft-now-spin"></span> 上传解析中（提取文本 → 切分段落）…';
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const resp = await fetch("/api/doccheck/upload", { method: "POST", headers: authHeaders(), body: fd });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try { detail = (await resp.json()).detail || detail; } catch (_) { /* 非JSON错误体 */ }
+      throw new Error(detail);
+    }
+    const d = await resp.json();
+    AIC.doc = d.doc;
+    AIC.humanize = d.humanize;
+    AIC.docReport = null;
+    AIC.recheck = null;
+    AIC.modal.querySelector("#aicResult").innerHTML = "";
+    AIC.modal.querySelector("#aicExport").style.display = "none";
+    AIC.modal.querySelector("#aicDownload").style.display = "none";
+    renderAicDocMeta();
+    syncAicMode();
+    toast(`文档已解析：${d.doc.paras} 段 · ${d.doc.chars} 字，点击「开始检测」`, "ok");
+  } catch (e) {
+    AIC.doc = null;
+    renderAicDocMeta();
+    meta.innerHTML = `<span class="aic-doc-err">⚠ 上传失败：${esc(e.message)}</span>`;
+    toast(`上传失败: ${e.message}`, "err");
+  }
+}
+
+function renderAicDocMeta() {
+  const meta = AIC.modal.querySelector("#aicDocMeta");
+  const empty = AIC.modal.querySelector("#aicUpEmpty");
+  if (!AIC.doc) {
+    meta.style.display = "none";
+    meta.innerHTML = "";
+    empty.style.display = "";
+    return;
+  }
+  empty.style.display = "none";
+  meta.style.display = "";
+  const hz = AIC.humanize || {};
+  meta.innerHTML =
+    `<span class="aic-doc-ico">${AIC.doc.ext === ".pdf" ? "📕" : AIC.doc.ext === ".docx" ? "📘" : "📄"}</span>`
+    + `<span class="aic-doc-name" title="${esc(AIC.doc.filename)}">${esc(AIC.doc.filename)}</span>`
+    + `<span class="aic-doc-stats">${AIC.doc.paras} 段 · ${AIC.doc.chars} 字</span>`
+    + `<span class="aic-doc-hz ${hz.available ? "ok" : "warn"}" title="${esc(hz.hint || "")}">`
+    + (hz.available ? "✓ humanize-9b 在线" : "⚠ humanize-9b 离线") + "</span>"
+    + '<span class="spacer"></span>'
+    + '<button class="btn-mini" id="aicRePick">更换文档</button>';
+  meta.querySelector("#aicRePick").addEventListener("click", () =>
+    AIC.modal.querySelector("#aicFileInput").click());
+}
+
+async function downloadDocChecked() {
+  if (!AIC.doc) return;
+  try {
+    const resp = await fetch(`/api/doccheck/doc/${encodeURIComponent(AIC.doc.id)}/download`,
+                             { headers: authHeaders() });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const disp = resp.headers.get("Content-Disposition") || "";
+    const m = disp.match(/filename\*?=(?:UTF-8'')?"?([^";]+)/i);
+    let name = `${AIC.doc.filename.replace(/\.[^.]+$/, "")}_改写版`;
+    if (m) { try { name = decodeURIComponent(m[1]); } catch (_) { name = m[1]; } }
+    const blob = await resp.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+    toast("改写文档已下载", "ok");
+  } catch (e) {
+    toast(`下载失败: ${e.message}`, "err");
+  }
+}
+
 async function runAiCenter() {
   if (AIC.running) return;
-  if (!state.currentProject) { toast("请先选择项目", "err"); return; }
-  const mode = AIC.modal.querySelector('input[name="aicMode"]:checked').value;
+  const mode = aicModeValue();
+  if (mode === "upload" && !AIC.doc) {
+    AIC.modal.querySelector("#aicPick").click();
+    return;
+  }
+  if (mode !== "upload" && !state.currentProject) { toast("请先选择项目", "err"); return; }
   const btn = AIC.modal.querySelector("#aicRun");
   const prog = AIC.modal.querySelector("#aicProgress");
   const result = AIC.modal.querySelector("#aicResult");
   AIC.running = true;
   btn.disabled = true; btn.textContent = "检测中…";
   AIC.modal.querySelector("#aicExport").style.display = "none";
+  AIC.modal.querySelector("#aicDownload").style.display = "none";
   prog.style.display = "";
   result.innerHTML = "";
   try {
@@ -992,6 +1122,19 @@ async function runAiCenter() {
       });
       AIC.lastReport = { mode: "full", project: state.currentProject, full: r, sections: null };
       result.innerHTML = renderAicFull(r);
+    } else if (mode === "upload") {
+      prog.innerHTML = '<span class="ft-now-spin"></span>整篇送检中（朱雀合并口径 + 本地 BERT + 段落级评分），约 20~90 秒…';
+      const r = await api("/api/doccheck/detect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc_id: AIC.doc.id }),
+      });
+      AIC.doc = r.doc;
+      AIC.docReport = r.report;
+      AIC.recheck = null;
+      AIC.lastReport = { mode: "doc", doc: AIC.doc, report: r.report, recheck: null };
+      result.innerHTML = renderAicDoc(r.report, null, []);
+      bindAicParaEvents();
     } else {
       const secs = (state.outline?.sections || []).filter(s => (s.content || "").trim());
       if (!secs.length) throw new Error("没有成稿章节");
@@ -1015,8 +1158,13 @@ async function runAiCenter() {
   }
 }
 
-function _zqBadge(zq) {
-  if (!zq) return '<div class="aic-zq-card na"><div class="zqc-top"><span class="zqc-name">朱雀官方检测</span></div><div class="aic-hint">未配置 API Key</div></div>';
+function _zqBadge(zq, available) {
+  if (!zq) {
+    const why = available === false ? "未配置 API Key"
+      : available === true ? "本次请求失败（限流/额度不足），已用本地引擎完成检测"
+      : "未配置 API Key";
+    return `<div class="aic-zq-card na"><div class="zqc-top"><span class="zqc-name">朱雀官方检测</span></div><div class="aic-hint">${why}</div></div>`;
+  }
   const ai = Math.round((zq.ai_ratio || 0) * 100), su = Math.round((zq.suspect_ratio || 0) * 100);
   const hu = Math.round((zq.human_ratio || 0) * 100);
   // 判定以 AI 确证占比为硬指标（朱雀“疑似”是灰区标签，正常学术文本也常偏高）
@@ -1042,7 +1190,7 @@ function renderAicFull(r) {
     <div class="aic-full-title">${esc(r.paper_title || "")}</div>
     <div class="aic-full-meta">${r.sections} 节 · ${r.chars} 字 · ${esc((r.checked_at || "").replace("T", " "))}</div>
     <div class="set-group-title">朱雀官方检测（合并口径 · 与网页版算法一致）</div>
-    ${_zqBadge(r.zhuque)}
+    ${_zqBadge(r.zhuque, r.zhuque_available)}
     ${r.zhuque ? `<div class="aic-hint">消耗 ${r.zhuque.tokens || "-"} tokens（月免费额度 50 万）</div>` : ""}
     <div class="set-group-title">本地 BERT 引擎 + 启发式体检</div>
     <div class="aic-duo">
@@ -1073,12 +1221,188 @@ function renderAicSections(rows) {
     + `<div class="aic-hint">朱雀「疑似」是灰区标签（正常学术文本也常见），硬指标看「朱雀AI」列；≥50% 时建议对该节执行「🪄 去AI味·深度」后复检</div>`;
 }
 
+/* ---------- 上传文档：报告渲染 + 段落勾选 + 9B 改写复检 ---------- */
+function _aicParaRow(i, score, preview, rewritten) {
+  const prob = score?.ai_prob == null ? null : Math.round(score.ai_prob * 100);
+  const cls = prob == null ? "na" : prob >= 70 ? "ai" : prob >= 50 ? "suspect" : "human";
+  const heur = score?.heur;
+  const st = rewritten === true ? '<span class="aic-para-st ok">✅ 已改写</span>'
+    : rewritten === false ? '<span class="aic-para-st fail">❌ 保留原文</span>'
+    : '<span class="aic-para-st" data-st="' + i + '"></span>';
+  return `<label class="aic-para ${cls !== "na" ? cls : ""}" data-idx="${i}">
+    <input type="checkbox" data-para="${i}" ${score?.rewritable ? "" : "disabled"
+      } title="${score?.rewritable ? "" : "段落过短或为标题/表格行，不参与改写"}">
+    <span class="aic-para-no">${i + 1}</span>
+    <span class="aic-para-badge ${cls}" title="本地 BERT · AI 概率">${prob == null ? "–" : prob + "%"}</span>
+    <span class="aic-para-heur" title="启发式 AI 味分/100">${heur == null ? "-" : heur}</span>
+    <span class="aic-para-pv">${esc(preview || "")}</span>
+    ${st}
+  </label>`;
+}
+
+function aicCmpTable(before, after) {
+  const pct = (v) => v == null ? null : Math.round(v * 100);   // 比例 → 整数百分数
+  const row = (name, b, a, unit = "%", goodDown = true) => {
+    const hasNum = b != null && a != null;
+    const delta = hasNum ? a - b : null;
+    const better = delta == null || delta === 0 ? "" : (delta < 0) === goodDown ? "↓" : "↑";
+    const dcls = delta == null || delta === 0 ? "" : (delta < 0) === goodDown ? "down" : "up";
+    const fmt = (v) => v == null ? "-" : v + unit;
+    return `<tr><td>${name}</td><td>${fmt(b)}</td><td><b>${fmt(a)}</b></td>`
+      + `<td class="aic-cmp-d ${dcls}">${delta == null ? "-" : (delta > 0 ? "+" : "") + delta + (better || "")}</td></tr>`;
+  };
+  const bz = before?.zhuque, az = after?.zhuque;
+  const bm = before?.model_check, am = after?.model_check;
+  const hb = before?.heuristic?.score, ha = after?.heuristic?.score;
+  return `<div class="aic-cmp">
+    <div class="aic-cmp-title">🔄 改写前后对比（改写段已替换，其余原样）</div>
+    <table class="aic-table aic-cmp-table"><thead><tr><th>引擎指标</th><th>改写前</th><th>改写后</th><th>变化</th></tr></thead><tbody>
+    ${row("朱雀 AI 确证占比", pct(bz?.ai_ratio), pct(az?.ai_ratio))}
+    ${row("朱雀 疑似占比", pct(bz?.suspect_ratio), pct(az?.suspect_ratio))}
+    ${row("朱雀 人工占比", pct(bz?.human_ratio), pct(az?.human_ratio), "%", false)}
+    ${row("本地 BERT AI 概率", pct(bm?.ai_prob), pct(am?.ai_prob))}
+    ${row("启发式 AI 味分", hb == null ? null : hb, ha == null ? null : ha, "/100")}
+    </tbody></table>
+    ${az ? `<div class="aic-hint">复检消耗 ${az.tokens || "-"} tokens · ${esc((after.checked_at || "").replace("T", " "))}</div>` : ""}
+  </div>`;
+}
+
+function renderAicDoc(r, cmpBefore, rewrittenMap) {
+  const mc = r.model_check;
+  const hs = r.heuristic?.score ?? 0;
+  const previews = AIC.doc?.previews || [];
+  const rw = rewrittenMap || {};
+  const rows = (r.para_scores || []).map((s, i) =>
+    _aicParaRow(i, s, previews[i], rw[i])).join("");
+  return `
+  <div class="aic-full">
+    ${cmpBefore ? aicCmpTable(cmpBefore, r) : `
+    <div class="aic-full-title">${esc(r.filename || AIC.doc?.filename || "")}</div>
+    <div class="aic-full-meta">${r.paras} 段 · ${r.chars} 字 · ${esc((r.checked_at || "").replace("T", " "))}</div>`}
+    <div class="set-group-title">朱雀官方检测（合并口径 · 与网页版算法一致）</div>
+    ${_zqBadge(r.zhuque, r.zhuque_available)}
+    ${r.zhuque ? `<div class="aic-hint">消耗 ${r.zhuque.tokens || "-"} tokens（月免费额度 50 万）</div>` : ""}
+    <div class="set-group-title">本地 BERT 引擎 + 启发式体检</div>
+    <div class="aic-duo">
+      ${mc ? `<div class="duo-card ${mc.verdict === "human" ? "human" : mc.verdict}">
+        <div class="duo-num">${Math.round(mc.ai_prob * 100)}<i>%</i></div>
+        <div class="duo-lab">本地 BERT · AI 概率</div>
+        <div class="duo-verdict">${mc.verdict === "human" ? "人类写作" : mc.verdict === "suspect" ? "疑似" : "AI 生成"}</div></div>` : ""}
+      <div class="duo-card ${hs > 55 ? "ai" : hs > 35 ? "suspect" : "human"}">
+        <div class="duo-num">${r.heuristic?.score ?? "-"}<i>/100</i></div>
+        <div class="duo-lab">启发式体检 · AI 味分</div>
+        <div class="duo-verdict">${hs > 55 ? "需去AI味" : "自然"}</div></div>
+    </div>
+    <div class="set-group-title">段落明细<span class="aic-para-title-sub">勾选后用微调 humanize-9b 改写并自动复检 · 徽标为本地 BERT AI 概率</span></div>
+    <div class="aic-para-bar">
+      <button class="btn-mini" data-aicsel="smart" title="选中 BERT ≥50% 或启发式 ≥55 分的段落">🎯 选中疑似段</button>
+      <button class="btn-mini" data-aicsel="all">全选</button>
+      <button class="btn-mini" data-aicsel="none">清空</button>
+      <span class="aic-para-count" id="aicSelCount">已选 0 段</span>
+      <span class="spacer"></span>
+      <button class="btn-mini primary" id="aicRewrite" ${(AIC.humanize?.available) ? "" : "disabled"}
+        title="${esc(AIC.humanize?.hint || "") || "humanize-9b（Ollama 本地微调）句式级去AI改写，锁数字/引用，改写后自动复检"}">🪄 改写选中段并复检</button>
+    </div>
+    <div class="aic-paras" id="aicParas">${rows}</div>
+    ${r.para_scores?.length > r.paras ? "" : ""}
+  </div>`;
+}
+
+function bindAicParaEvents() {
+  const box = AIC.modal.querySelector("#aicParas");
+  if (!box) return;
+  const syncCount = () => {
+    const n = box.querySelectorAll("input:checked").length;
+    const el = AIC.modal.querySelector("#aicSelCount");
+    if (el) el.textContent = `已选 ${n} 段`;
+  };
+  box.addEventListener("change", syncCount);
+  AIC.modal.querySelectorAll("[data-aicsel]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const m = b.dataset.aicsel;
+      box.querySelectorAll("input").forEach((cb) => {
+        if (cb.disabled) return;
+        if (m === "all") cb.checked = true;
+        else if (m === "none") cb.checked = false;
+        else {
+          const s = (AIC.docReport?.para_scores || [])[+cb.dataset.para] || {};
+          cb.checked = (s.ai_prob != null && s.ai_prob >= 0.5)
+                    || (s.heur != null && s.heur >= 55);
+        }
+      });
+      syncCount();
+    }));
+  AIC.modal.querySelector("#aicRewrite")?.addEventListener("click", runDocRewrite);
+  syncCount();
+}
+
+async function runDocRewrite() {
+  if (AIC.rewriting) return;
+  const idxs = [...AIC.modal.querySelectorAll("#aicParas input:checked")].map((cb) => +cb.dataset.para);
+  if (!idxs.length) { toast("请先勾选要改写的段落", "err"); return; }
+  if (!AIC.humanize?.available) {
+    toast("humanize-9b 不可用：" + (AIC.humanize?.hint || "请启动 Ollama"), "err");
+    return;
+  }
+  AIC.rewriting = true;
+  const btn = AIC.modal.querySelector("#aicRewrite");
+  const prog = AIC.modal.querySelector("#aicProgress");
+  const setSt = (i, html, cls) => {
+    const el = AIC.modal.querySelector(`[data-st="${i}"]`);
+    if (el) { el.innerHTML = html; el.className = "aic-para-st " + (cls || ""); }
+  };
+  btn.disabled = true;
+  prog.style.display = "";
+  prog.innerHTML = '<span class="ft-now-spin"></span>humanize-9b 启动中（本地模型加载约 10~30 秒）…';
+  let done = 0;
+  const rewritten = {};
+  const beforeReport = AIC.docReport;
+  try {
+    await streamSSE("/api/doccheck/rewrite", { doc_id: AIC.doc.id, paras: idxs }, (ev) => {
+      if (ev.type === "para_start") {
+        prog.innerHTML = `<span class="ft-now-spin"></span>humanize-9b 改写中 ${done + 1}/${idxs.length}：第 ${ev.idx + 1} 段（${ev.chars} 字，本地模型约 10~60 秒/段）…`;
+        setSt(ev.idx, "⏳ 改写中", "run");
+      } else if (ev.type === "para_done") {
+        done++;
+        if (ev.ok) { rewritten[ev.idx] = true; setSt(ev.idx, `✅ 已改写 ${ev.after_chars}字 · ${ev.secs}s`, "ok"); }
+        else { rewritten[ev.idx] = false; setSt(ev.idx, "❌ 保留原文", "fail"); }
+      } else if (ev.type === "status") {
+        prog.innerHTML = `<span class="ft-now-spin"></span>${esc(ev.content)}`;
+      } else if (ev.type === "recheck") {
+        AIC.recheck = ev.report;
+      } else if (ev.type === "done") {
+        AIC.doc = ev.doc;
+        AIC.docReport = AIC.recheck;
+        AIC.lastReport = { mode: "doc", doc: AIC.doc, report: beforeReport,
+                           recheck: AIC.recheck, rewritten, changed: ev.changed };
+        const res = AIC.modal.querySelector("#aicResult");
+        res.innerHTML = renderAicDoc(AIC.recheck, beforeReport, rewritten);
+        bindAicParaEvents();
+        AIC.modal.querySelector("#aicExport").style.display = "";
+        AIC.modal.querySelector("#aicDownload").style.display = "";
+        toast(`9B 改写完成：${ev.changed.length} 段成功` +
+              (ev.failed.length ? ` · ${ev.failed.length} 段未过锁字校验保留原文` : ""), "ok");
+        prog.innerHTML = "✅ 改写并复检完成（对比见上方「改写前后对比」）";
+      } else if (ev.type === "error") {
+        throw new Error(ev.content);
+      }
+    });
+  } catch (e) {
+    toast(`改写失败: ${e.message}`, "err");
+    prog.innerHTML = "⚠ " + esc(e.message);
+  } finally {
+    AIC.rewriting = false;
+    btn.disabled = false;
+    setTimeout(() => { if (!AIC.rewriting) prog.style.display = "none"; }, 5000);
+  }
+}
+
 function exportAiReport() {
   if (!AIC.lastReport) return;
   const rep = AIC.lastReport;
   const t = new Date();
   const stamp = `${t.getFullYear()}${String(t.getMonth() + 1).padStart(2, "0")}${String(t.getDate()).padStart(2, "0")}_${String(t.getHours()).padStart(2, "0")}${String(t.getMinutes()).padStart(2, "0")}`;
-  let md = `# AI 检测报告 · ${rep.project}\n\n- 检测时间：${t.toLocaleString()}\n- 检测模式：${rep.mode === "full" ? "整篇送检（朱雀合并口径）" : "逐节检测"}\n\n`;
+  let md = `# AI 检测报告 · ${rep.project || rep.doc?.filename || ""}\n\n- 检测时间：${t.toLocaleString()}\n- 检测模式：${rep.mode === "full" ? "整篇送检（朱雀合并口径）" : rep.mode === "doc" ? "上传文档检测" : "逐节检测"}\n\n`;
   if (rep.mode === "full" && rep.full) {
     const f = rep.full, zq = f.zhuque;
     md += `## 整篇结果（${f.sections} 节 · ${f.chars} 字）\n\n`;
@@ -1087,6 +1411,27 @@ function exportAiReport() {
     if (f.model_check) md += `| 本地BERT | ${Math.round(f.model_check.ai_prob * 100)}% | - | - | ${f.model_check.verdict === "human" ? "人类写作" : f.model_check.verdict === "suspect" ? "疑似" : "AI 生成"} |\n`;
     md += `| 启发式体检 | ${f.heuristic?.score ?? "-"}/100 | - | - | 阈值55 |\n\n`;
     if (zq?.tokens) md += `> 朱雀消耗 ${zq.tokens} tokens（月免费 50 万）\n`;
+  } else if (rep.mode === "doc" && rep.report) {
+    const f = rep.report, zq = f.zhuque;
+    md += `## 上传文档《${rep.doc?.filename || ""}》（${f.paras} 段 · ${f.chars} 字）\n\n`;
+    const engineRows = (r, label) => {
+      let s = `| ${label} | ${r?.zhuque ? Math.round(r.zhuque.ai_ratio * 100) + "%" : "-"} | ${r?.zhuque ? Math.round(r.zhuque.suspect_ratio * 100) + "%" : "-"} | ${r?.zhuque ? Math.round(r.zhuque.human_ratio * 100) + "%" : "-"} | ${r?.model_check ? Math.round(r.model_check.ai_prob * 100) + "%" : "-"} | ${r?.heuristic?.score ?? "-"} |\n`;
+      return s;
+    };
+    md += `| 引擎 | 朱雀AI | 朱雀疑似 | 朱雀人工 | 本地BERT | 启发式 |\n|---|---|---|---|---|---|\n`;
+    if (rep.recheck) {
+      md += engineRows(f, "改写前");
+      md += engineRows(rep.recheck, "改写后");
+      if (rep.changed) md += `\n> humanize-9b 改写段落：${rep.changed.map((i) => i + 1).join("、") || "无"}\n`;
+    } else {
+      md += engineRows(f, "检测结果");
+    }
+    md += `\n### 段落明细（BERT AI 概率 / 启发式分）\n\n| # | 字数 | BERT | 启发式 | 状态 |\n|---|---|---|---|---|\n`;
+    (f.para_scores || []).forEach((s, i) => {
+      const rw = rep.rewritten?.[i];
+      md += `| ${i + 1} | ${s.chars} | ${s.ai_prob == null ? "-" : Math.round(s.ai_prob * 100) + "%"} | ${s.heur ?? "-"} | ${rw === true ? "已改写" : rw === false ? "保留原文" : "-"} |\n`;
+    });
+    md += `\n`;
   } else if (rep.sections) {
     md += `| 章节 | 字数 | 启发式 | 朱雀AI | 朱雀疑似 | 本地BERT |\n|---|---|---|---|---|---|\n`;
     for (const { title, words, r } of rep.sections) {
@@ -1206,6 +1551,8 @@ async function restoreWorkspace(ws) {
       attachments: [],
       pendingSelections: [],
       ts: s.ts || (Date.now() - i * 60e3),
+      pinned: !!s.pinned, pinnedAt: s.pinnedAt || undefined,
+      archived: !!s.archived, archivedAt: s.archivedAt || undefined,
     }));
     state.activeSession = Math.min(Number(st.active_session) || 0, state.sessions.length - 1);
     renderSessionBar();
@@ -1234,6 +1581,9 @@ async function saveWorkspaceNow(keepalive) {
           id: s.id, name: s.name,
           messages: s.messages.slice(-60),
           attachments: [],
+          ts: s.ts,
+          pinned: !!s.pinned, pinnedAt: s.pinnedAt || null,
+          archived: !!s.archived, archivedAt: s.archivedAt || null,
         })),
         theme: document.body.dataset.theme || "dark",
         paper_style: state.paperStyle || { ...PAPER_STYLE_DEFAULTS },
@@ -1393,37 +1743,89 @@ async function loadProjects() {
   try {
     const q = state.workspaceRoot ? `?root=${encodeURIComponent(state.workspaceRoot)}` : "";
     state.projects = await api("/api/projects" + q);
+    state.projects._loaded = true;
     renderProjects();
   } catch (e) { toast(`项目列表加载失败: ${e.message}`, "err"); }
 }
 
+/* ---------- 项目列表隐藏（纯前端）：右键隐藏，仅影响显示，后端注册数据不动 ---------- */
+const HIDDEN_PROJECTS_KEY = "moji.hiddenProjects";
+function hiddenProjects() {
+  try { return JSON.parse(localStorage.getItem(HIDDEN_PROJECTS_KEY)) || []; }
+  catch (e) { return []; }
+}
+function setHiddenProjects(list) {
+  try { localStorage.setItem(HIDDEN_PROJECTS_KEY, JSON.stringify(list)); } catch (e) { /* 隐私模式等 */ }
+}
+
 function renderProjects() {
   const box = $("#projectList");
-  const registered = state.projects.registered || [];
-  const candidates = state.projects.candidates || [];
+  const hidden = new Set(hiddenProjects());
+  const registered = (state.projects.registered || []).filter((p) => !hidden.has(p.name));
+  const candidates = (state.projects.candidates || []).filter((c) => !hidden.has(c.name));
   if (!registered.length && !candidates.length) {
     box.innerHTML = '<div class="empty-hint">未发现项目目录</div>';
-    return;
+  } else {
+    let html = "";
+    for (const p of registered) {
+      const sel = state.currentProject === p.name ? "selected" : "";
+      html += `<div class="project-item ${sel}" data-name="${esc(p.name)}" data-path="${esc(p.path)}" data-registered="1">
+        <span>📁</span><span class="name">${esc(p.name)}</span>
+        <span class="badge outline">${p.has_outline ? "有大纲" : `${p.methods_count || 0}方法`}</span>
+      </div>`;
+    }
+    for (const c of candidates) {
+      if (registered.some((r) => r.path === c.path)) continue;
+      const sel = state.currentProject === c.name ? "selected" : "";
+      html += `<div class="project-item ${sel}" data-name="${esc(c.name)}" data-path="${esc(c.path)}" data-registered="">
+        <span>📂</span><span class="name">${esc(c.name)}</span>
+        <span class="badge">${c.python_scripts}脚本</span>
+      </div>`;
+    }
+    if (hidden.size) {
+      html += `<div class="project-restore" id="btnRestoreProjects" title="取消隐藏，恢复全部条目">已隐藏 ${hidden.size} 个项目 · 恢复显示</div>`;
+    }
+    box.innerHTML = html;
+    box.querySelectorAll(".project-item").forEach((el) => {
+      el.addEventListener("click", () => selectProject(el.dataset.name, el.dataset.path, !!el.dataset.registered));
+      el.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openProjectCtxMenu(ev.clientX, ev.clientY, el.dataset.name);
+      });
+    });
+    box.querySelector("#btnRestoreProjects")?.addEventListener("click", () => {
+      setHiddenProjects([]);
+      renderProjects();
+      toast("已恢复全部项目", "ok");
+    });
   }
-  let html = "";
-  for (const p of registered) {
-    const sel = state.currentProject === p.name ? "selected" : "";
-    html += `<div class="project-item ${sel}" data-name="${esc(p.name)}" data-path="${esc(p.path)}" data-registered="1">
-      <span>📁</span><span class="name">${esc(p.name)}</span>
-      <span class="badge outline">${p.has_outline ? "有大纲" : `${p.methods_count || 0}方法`}</span>
-    </div>`;
-  }
-  for (const c of candidates) {
-    if (registered.some((r) => r.path === c.path)) continue;
-    const sel = state.currentProject === c.name ? "selected" : "";
-    html += `<div class="project-item ${sel}" data-name="${esc(c.name)}" data-path="${esc(c.path)}" data-registered="">
-      <span>📂</span><span class="name">${esc(c.name)}</span>
-      <span class="badge">${c.python_scripts}脚本</span>
-    </div>`;
-  }
-  box.innerHTML = html;
-  box.querySelectorAll(".project-item").forEach((el) => {
-    el.addEventListener("click", () => selectProject(el.dataset.name, el.dataset.path, !!el.dataset.registered));
+}
+
+function openProjectCtxMenu(x, y, name) {
+  $("#projectCtxMenu")?.remove();
+  if (!name) return;
+  const menu = document.createElement("div");
+  menu.className = "context-menu show";
+  menu.id = "projectCtxMenu";
+  menu.innerHTML =
+    `<div class="item" data-act="hide">🚫 从列表隐藏</div>`
+    + `<div class="sep"></div>`
+    + `<div class="item" data-act="hint" style="color:var(--text-faint);font-size:11.5px;cursor:default;">仅前端隐藏 · 画像/大纲保留</div>`;
+  document.body.appendChild(menu);
+  menu.style.left = `${Math.max(6, Math.min(x, window.innerWidth - 230))}px`;
+  menu.style.top = `${Math.max(6, Math.min(y, window.innerHeight - menu.offsetHeight - 10))}px`;
+  menu.addEventListener("click", (ev) => {
+    const item = ev.target.closest("[data-act]");
+    if (!item || item.dataset.act === "hint") return;
+    menu.remove();
+    if (item.dataset.act === "hide") {
+      const list = hiddenProjects();
+      if (!list.includes(name)) list.push(name);
+      setHiddenProjects(list);
+      toast(`「${name}」已从列表隐藏（后端数据保留，底部可恢复）`, "ok");
+      renderProjects();
+    }
   });
 }
 
@@ -1561,6 +1963,17 @@ function showContextMenu(x, y, node) {
   menu.style.top = `${Math.min(y, window.innerHeight - 120)}px`;
 }
 document.addEventListener("click", () => { $("#contextMenu").classList.remove("show"); });
+document.addEventListener("click", (ev) => {
+  // 会话/项目右键菜单：点外部即关（菜单自身的 item click 已先处理并 remove）
+  if (ev.target.closest("#sessionCtxMenu")) return;
+  document.getElementById("sessionCtxMenu")?.remove();
+  if (ev.target.closest("#projectCtxMenu")) return;
+  document.getElementById("projectCtxMenu")?.remove();
+});
+window.addEventListener("resize", () => {
+  document.getElementById("sessionCtxMenu")?.remove();
+  document.getElementById("projectCtxMenu")?.remove();
+}, { passive: true });
 $("#ctxAddToSession").addEventListener("click", () => {
   if (ctxTargetFile) addAttachment(ctxTargetFile.path, ctxTargetFile.name);
 });
@@ -1682,20 +2095,33 @@ function relTime(ts) {
   if (diff < 7 * 86400e3) return Math.floor(diff / 86400e3) + " 天前";
   return new Date(Number(ts)).toLocaleDateString("zh-CN");
 }
-function openDrawer(id) {
-  closeDrawers();
-  const el = $("#" + id);
-  if (el) el.style.display = "";
-  const scrim = $("#drawerScrim");
-  if (scrim) scrim.style.display = "";
+/* ================= 侧栏复用面板：会话列表 / 项目与文件 / 知识库 =================
+   点侧栏「项目与文件」「知识库」时，在侧栏会话列表区域原地切换显示，
+   再点一次或 ✕ / Esc 回到会话列表。主区对话不受影响。 */
+let _paneView = "chat";
+function paneView() { return _paneView; }
+function openPaneView(name) {
+  if (_paneView === name) { closePaneView(); return; }  // 再点同一切回会话
+  _paneView = name;
+  const sb = document.querySelector(".sidebar");
+  if (sb) sb.dataset.pane = name;
+  $("#sbPaneProjects").hidden = name !== "projects";
+  $("#sbPaneKb").hidden = name !== "kb";
+  $("#sbDrawerProjects")?.classList.toggle("active", name === "projects");
+  $("#sbDrawerKb")?.classList.toggle("active", name === "kb");
+  if (name === "projects" && !state.projects._loaded) {
+    state.projects._loaded = true;
+    loadProjects();
+  }
 }
-function closeDrawers() {
-  ["drawerProjects", "drawerKb"].forEach((id) => {
-    const el = $("#" + id);
-    if (el) el.style.display = "none";
-  });
-  const scrim = $("#drawerScrim");
-  if (scrim) scrim.style.display = "none";
+function closePaneView() {
+  _paneView = "chat";
+  const sb = document.querySelector(".sidebar");
+  if (sb) delete sb.dataset.pane;
+  $("#sbPaneProjects").hidden = true;
+  $("#sbPaneKb").hidden = true;
+  $("#sbDrawerProjects")?.classList.remove("active");
+  $("#sbDrawerKb")?.classList.remove("active");
 }
 function bindShellExtras() {
   bindFolderPicker();
@@ -1705,11 +2131,10 @@ function bindShellExtras() {
   $("#cfgClose")?.addEventListener("click", closeCfgPanel);
   $("#cfgScrim")?.addEventListener("click", closeCfgPanel);
   $("#sbNewChat")?.addEventListener("click", addSession);
-  $("#sbDrawerProjects")?.addEventListener("click", () => openDrawer("drawerProjects"));
-  $("#sbDrawerKb")?.addEventListener("click", () => openDrawer("drawerKb"));
-  $("#drawerScrim")?.addEventListener("click", closeDrawers);
-  document.querySelectorAll("[data-drawer-close]").forEach((b) =>
-    b.addEventListener("click", closeDrawers));
+  $("#sbDrawerProjects")?.addEventListener("click", () => openPaneView("projects"));
+  $("#sbDrawerKb")?.addEventListener("click", () => openPaneView("kb"));
+  document.querySelectorAll("[data-cp-close]").forEach((b) =>
+    b.addEventListener("click", closePaneView));
   $("#ftTopBadge")?.addEventListener("click", () => {
     switchWsTab("paper");
     const strip = $("#fulltextStrip");
@@ -1719,6 +2144,11 @@ function bindShellExtras() {
     state.sbQuery = e.target.value.trim().toLowerCase();
     renderSessionBar();
   });
+  document.querySelectorAll("#sbViewTabs [data-sbview]").forEach((b) =>
+    b.addEventListener("click", () => {
+      state.sbView = b.dataset.sbview;
+      renderSessionBar();
+    }));
   document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
       e.preventDefault();
@@ -1747,12 +2177,8 @@ function bindEscLayers() {
   });
   const menuShow = (id) => byId(id, "show");
   // 低优先级 → 高优先级
-  ui.layer("drawers",
-    () => ["drawerProjects", "drawerKb"].some((id) => {
-      const el = document.getElementById(id);
-      return el && el.style.display !== "none";
-    }),
-    closeDrawers);
+  // 会话区视图（项目与文件/知识库）：非对话视图时 Esc 先回对话
+  ui.layer("paneView", () => paneView() !== "chat", closePaneView);
   // 认证遮罩（authOverlay）不注册：登录态必须显式操作，不允许 Esc 关闭
   ui.layer("settings", byId("settingsPage"));
   ui.layer("admin", byId("adminModal"));
@@ -1761,14 +2187,19 @@ function bindEscLayers() {
   ui.layer("outlineModal", byId("outlineModal"));
   ui.layer("understand", byId("understandWizard", "open", closeUwModal));
   ui.layer("aicenter", byId("aiCenterModal"));
-  ui.layer("tplModal", {
-    isOpen: () => !!document.getElementById("tplModal"),
-    close: () => document.getElementById("tplModal")?.remove(),
-  });
+  ui.layer("tplModal",
+    () => !!document.getElementById("tplModal"),
+    () => document.getElementById("tplModal")?.remove());
   ui.layer("figPicker", byId("figPicker"));
   ui.layer("figWorkshop", byId("figWorkshop"));
   ui.layer("imgModal", byId("imgModal", "open", () => { $("#imgModalImg").src = ""; }));
   ui.layer("ctxMenu", menuShow("contextMenu"));
+  ui.layer("sessionCtxMenu",
+    () => !!document.getElementById("sessionCtxMenu"),
+    () => document.getElementById("sessionCtxMenu")?.remove());
+  ui.layer("projectCtxMenu",
+    () => !!document.getElementById("projectCtxMenu"),
+    () => document.getElementById("projectCtxMenu")?.remove());
   ui.layer("strengthMenu", menuShow("strengthMenu"));
   ui.layer("styleMenu", menuShow("styleMenu"));
   ui.layer("fullMenu", menuShow("fullMenu"));
@@ -1851,59 +2282,72 @@ function addSession() {
   state.sessions.push({ id, name: `会话 ${state.sessions.length + 1}`, messages: [],
     attachments: [], pendingSelections: [], ts: Date.now() });
   state.activeSession = state.sessions.length - 1;
+  state.sbView = "main";  // 新会话在主列表可见
   renderSessionBar();
   renderChat();
   scheduleSave();
 }
 
+/* 会话显示排序：置顶优先（新置顶在前），其余按最近活动倒序；
+   归档视图只列已归档会话。返回 state.sessions 的下标数组 */
+function sessionOrder() {
+  const archived = state.sbView === "archived";
+  const idx = state.sessions.map((s, i) => ({ s, i }))
+    .filter(({ s }) => !!s.archived === archived)
+    .sort((a, b) => {
+      const pa = a.s.pinned ? (a.s.pinnedAt || 0) : -1;
+      const pb = b.s.pinned ? (b.s.pinnedAt || 0) : -1;
+      if (pa !== pb) return pb - pa;
+      return (b.s.ts || 0) - (a.s.ts || 0);
+    });
+  return idx.map((x) => x.i);
+}
+
 function renderSessionBar() {
-  // —— 侧栏会话列表（当前项目分组 + 相对时间 + 搜索过滤 + 重命名/删除） ——
+  // —— 侧栏会话列表：置顶/归档视图 + 搜索 + 右键菜单（置顶/归档/重命名/删除） ——
   const list = $("#sessionList");
   if (list) {
     const q = (state.sbQuery || "").toLowerCase();
-    const items = state.sessions.map((s, i) => ({ s, i }))
-      .filter(({ s }) => !q || (s.name || "").toLowerCase().includes(q)
-        || (s.messages || []).some((m) => (m.content || "").toLowerCase().includes(q)));
-    list.innerHTML = items.map(({ s, i }) => `
-      <div class="sb-item ${i === state.activeSession ? "active" : ""}" data-i="${i}" title="${esc(s.name)}（双击重命名）">
+    const archived = state.sbView === "archived";
+    document.querySelectorAll("#sbViewTabs [data-sbview]").forEach((b) =>
+      b.classList.toggle("active", b.dataset.sbview === state.sbView));
+    const nArch = state.sessions.filter((s) => s.archived).length;
+    const archCnt = $("#sbArchCount");
+    if (archCnt) archCnt.textContent = nArch ? ` ${nArch}` : "";
+    const order = sessionOrder()
+      .filter((i) => {
+        if (!q) return true;
+        const s = state.sessions[i];
+        return (s.name || "").toLowerCase().includes(q)
+          || (s.messages || []).some((m) => (m.content || "").toLowerCase().includes(q));
+      });
+    list.innerHTML = order.map((i) => {
+      const s = state.sessions[i];
+      return `
+      <div class="sb-item ${i === state.activeSession ? "active" : ""} ${s.pinned ? "pinned" : ""}"
+           data-i="${i}" title="${esc(s.name)}（双击重命名 · 右键更多操作）">
+        ${s.pinned ? '<span class="sb-pin-flag" title="已置顶">📌</span>' : ""}
         <span class="sb-item-name">${esc(s.name)}</span>
-        <span class="sb-item-time">${relTime(s.ts)}</span>
-        <span class="sb-item-acts">
-          <button class="sb-act" data-rename="${i}" title="重命名会话">✏</button>
-          <button class="sb-act" data-close="${i}" title="删除会话">✕</button>
-        </span>
-      </div>`).join("") ||
-      `<div class="sb-empty">${q ? "无匹配会话" : "暂无会话"}</div>`;
+        <span class="sb-item-time">${archived ? "已归档" : relTime(s.ts)}</span>
+      </div>`;
+    }).join("") ||
+      `<div class="sb-empty">${q ? "无匹配会话" : archived ? "暂无归档会话" : "暂无会话"}</div>`;
+
     list.querySelectorAll(".sb-item").forEach((el) => {
+      const i = Number(el.dataset.i);
       el.addEventListener("click", (ev) => {
-        if (ev.target.closest("[data-close],[data-rename]")) return;
-        state.activeSession = Number(el.dataset.i);
+        state.activeSession = i;
         document.body.classList.remove("sb-open"); // 窄屏单栏：选完会话自动收起侧栏
         renderSessionBar(); renderChat(); scheduleSave();
       });
       el.addEventListener("dblclick", (ev) => {
-        if (ev.target.closest("[data-close],[data-rename]")) return;
-        startSessionRename(Number(el.dataset.i), el);
+        ev.preventDefault();
+        startSessionRename(i, el);
       });
-      el.querySelector("[data-rename]")?.addEventListener("click", (ev) => {
+      el.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
         ev.stopPropagation();
-        startSessionRename(Number(el.dataset.i), el);
-      });
-      el.querySelector("[data-close]")?.addEventListener("click", async (ev) => {
-        ev.stopPropagation();
-        const i = Number(ev.target.dataset.close);
-        const s = state.sessions[i];
-        if (!s) return;
-        const ok = await ui.confirm({
-          title: "删除会话", icon: "🗑",
-          message: `删除「${s.name}」？（含 ${s.messages.length} 条消息）`,
-          danger: true, confirmText: "删除",
-        });
-        if (!ok) return;
-        state.sessions.splice(i, 1);
-        if (!state.sessions.length) { addSession(); return; }
-        state.activeSession = Math.min(state.activeSession, state.sessions.length - 1);
-        renderSessionBar(); renderChat(); scheduleSave();
+        openSessionCtxMenu(ev.clientX, ev.clientY, i);
       });
     });
   }
@@ -1914,6 +2358,107 @@ function renderSessionBar() {
     const sess = activeSession();
     crumbC.textContent = sess ? sess.name : "新会话";
   }
+}
+
+/* ================= 会话右键菜单：置顶 / 重命名 / 归档 / 删除 ================= */
+
+/* 被隐藏（归档/删除）的会话若是当前会话，自动切到主列表第一个可见会话 */
+function _switchActiveAway() {
+  const visible = sessionOrder().filter((i) => {
+    const s = state.sessions[i];
+    return state.sbView === "archived" ? true : !s.archived;
+  });
+  if (visible.includes(state.activeSession)) return;
+  const fallback = state.sessions.findIndex((s) => !s.archived);
+  state.activeSession = fallback >= 0 ? fallback : -1;
+  renderChat();
+}
+
+function sessionTogglePin(i) {
+  const s = state.sessions[i];
+  if (!s) return;
+  s.pinned = !s.pinned;
+  s.pinnedAt = s.pinned ? Date.now() : undefined;
+  toast(s.pinned ? `「${s.name}」已置顶` : `「${s.name}」已取消置顶`, "ok");
+  renderSessionBar(); scheduleSave();
+}
+
+function sessionArchive(i) {
+  const s = state.sessions[i];
+  if (!s) return;
+  s.archived = true;
+  s.archivedAt = Date.now();
+  _switchActiveAway();
+  toast(`「${s.name}」已归档（侧栏「归档」页可找回）`, "ok");
+  renderSessionBar(); scheduleSave();
+}
+
+function sessionUnarchive(i) {
+  const s = state.sessions[i];
+  if (!s) return;
+  s.archived = false;
+  s.archivedAt = undefined;
+  toast(`「${s.name}」已恢复到会话列表`, "ok");
+  renderSessionBar(); scheduleSave();
+}
+
+async function sessionDelete(i) {
+  const s = state.sessions[i];
+  if (!s) return;
+  const ok = await ui.confirm({
+    title: "删除会话", icon: "🗑",
+    message: `删除「${s.name}」？（含 ${s.messages.length} 条消息）`,
+    danger: true, confirmText: "删除",
+  });
+  if (!ok) return;
+  state.sessions.splice(i, 1);
+  if (!state.sessions.length) { addSession(); return; }
+  if (state.activeSession >= state.sessions.length) {
+    state.activeSession = state.sessions.length - 1;
+  }
+  _switchActiveAway();
+  renderSessionBar(); scheduleSave();
+}
+
+function sessionRename(i) {
+  const el = document.querySelector(`#sessionList .sb-item[data-i="${i}"]`);
+  if (el) el.scrollIntoView({ block: "nearest" });
+  startSessionRename(i, el);
+}
+
+function openSessionCtxMenu(x, y, i) {
+  $("#sessionCtxMenu")?.remove();   // 换目标右键时重建
+  const s = state.sessions[i];
+  if (!s) return;
+  const archived = state.sbView === "archived";
+  const rows = [];
+  if (!archived) {
+    rows.push(`<div class="item" data-act="pin">${s.pinned ? "📍 取消置顶" : "📌 置顶会话"}</div>`);
+  }
+  rows.push(`<div class="item" data-act="rename">✏ 重命名会话</div>`);
+  rows.push(archived
+    ? `<div class="item" data-act="unarch">📤 取消归档</div>`
+    : `<div class="item" data-act="arch">🗄 归档会话</div>`);
+  rows.push('<div class="sep"></div>');
+  rows.push(`<div class="item danger" data-act="del">🗑 删除会话…</div>`);
+  const menu = document.createElement("div");
+  menu.className = "context-menu show";
+  menu.id = "sessionCtxMenu";
+  menu.innerHTML = rows.join("");
+  document.body.appendChild(menu);
+  menu.style.left = `${Math.max(6, Math.min(x, window.innerWidth - 200))}px`;
+  menu.style.top = `${Math.max(6, Math.min(y, window.innerHeight - menu.offsetHeight - 10))}px`;
+  menu.addEventListener("click", (ev) => {
+    const item = ev.target.closest("[data-act]");
+    if (!item) return;
+    const act = item.dataset.act;
+    menu.remove();
+    if (act === "pin") sessionTogglePin(i);
+    else if (act === "rename") sessionRename(i);
+    else if (act === "arch") sessionArchive(i);
+    else if (act === "unarch") sessionUnarchive(i);
+    else if (act === "del") sessionDelete(i);
+  });
 }
 
 /* 会话行内重命名（双击或 ✏ 触发） */
@@ -2735,7 +3280,7 @@ function prepWizardSteps() {
       key: "project", icon: "🗂", title: "选择研究项目",
       desc: "从左侧「项目与文件」抽屉选择（或注册）你的代码/实验项目",
       action: "选择项目", done: false,
-      run: () => { openDrawer("drawerProjects"); toast("在抽屉中点击一个项目目录完成注册"); },
+      run: () => { openPaneView("projects"); toast("点击一个项目目录完成注册"); },
     });
   }
   steps.push(
@@ -4609,7 +5154,7 @@ function bindStaticEvents() {
       el.textContent = st.job?.running ? `入库中…` : `${n} 篇`;
     } catch (e) { /* 静默降级 */ }
   };
-  $("#btnKbStatus").addEventListener("click", async () => {
+  $("#btnKbStatus")?.addEventListener("click", async () => {
     try {
       const kb = await api("/api/kb/status");
       $("#kbMethods").textContent = `${kb.method_papers?.document_count ?? 0} 块`;

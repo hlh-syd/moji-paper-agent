@@ -42,19 +42,69 @@
           <span class="sb-ico">🔍</span>
           <input type="text" id="sbSearch" placeholder="搜索会话与消息" autocomplete="off">
         </div>
-        <button class="sb-action" id="sbDrawerProjects" title="研究项目与文件树：选择项目、浏览并注入文件">
+        <button class="sb-action" id="sbDrawerProjects" title="研究项目与文件树：选择项目、浏览并注入文件（在会话区显示）">
           <span class="sb-ico">🗂</span><span>项目与文件</span>
         </button>
-        <button class="sb-action" id="sbDrawerKb" title="知识库状态与更新">
+        <button class="sb-action" id="sbDrawerKb" title="知识库状态与更新（在会话区显示）">
           <span class="sb-ico">📚</span><span>知识库</span>
         </button>
       </div>
 
       <div class="sb-group-head">
         <span>会话</span>
-        <span class="sb-group-sub" id="sbGroupSub">全部</span>
+        <span class="sb-viewtabs" id="sbViewTabs">
+          <button type="button" data-sbview="main" class="active" title="进行中的会话">全部</button>
+          <button type="button" data-sbview="archived" title="已归档的会话">归档<span id="sbArchCount"></span></button>
+        </span>
       </div>
       <div class="sb-list" id="sessionList"></div>
+
+      <!-- 侧栏复用面板：点「项目与文件 / 知识库」时原地替换会话列表区域 -->
+      <div class="sb-pane" id="sbPaneProjects" hidden>
+        <div class="sbp-head">
+          <span class="sbp-title">🗂 项目与文件</span>
+          <button class="btn-mini" data-cp-close aria-label="返回会话列表">✕</button>
+        </div>
+        <div class="sbp-body">
+          <div class="sbp-acts">
+            <span class="cp-act" id="btnSetRoot" title="新建/切换工作区：选择新的根目录，会话与生成物自动跟随">＋ 新建工作区</span>
+            <span class="cp-act" id="btnRefreshProjects">刷新</span>
+          </div>
+          <div class="cp-label">研究项目 <span class="cp-label-sub">点击选择 / 注册</span></div>
+          <div id="projectList"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+          <div class="cp-label" style="margin-top:14px;">文件树 <span class="cp-label-sub">右键 / 拖拽加入会话</span></div>
+          <div class="file-tree" id="fileTree">
+            <div class="empty-hint">先选择一个项目</div>
+          </div>
+        </div>
+      </div>
+      <div class="sb-pane" id="sbPaneKb" hidden>
+        <div class="sbp-head">
+          <span class="sbp-title">📚 知识库</span>
+          <span class="sbp-head-acts">
+            <span class="cp-act" id="btnKbStatus">状态</span>
+            <button class="btn-mini" data-cp-close aria-label="返回会话列表">✕</button>
+          </span>
+        </div>
+        <div class="sbp-body sbp-body-kb">
+          <div class="kb-row">
+            <span class="kb-name">方法原论文</span>
+            <span class="kb-count" id="kbMethods">-</span>
+            <button class="btn-mini" id="btnBuildMethods" title="知识库已持久化，启动自动加载，平时无需点击。仅在注册表新增方法/文献后需要更新时使用">更新</button>
+          </div>
+          <div class="kb-row">
+            <span class="kb-name">写作教学库</span>
+            <span class="kb-count" id="kbWriting">-</span>
+            <button class="btn-mini" id="btnBuildWriting" title="知识库已持久化，启动自动加载，平时无需点击。仅在补充新教材/B站字幕时使用">更新</button>
+          </div>
+          <div class="kb-row">
+            <span class="kb-name">多模态文献库</span>
+            <span class="kb-count" id="kbRagDocs">-</span>
+            <button class="btn-mini" id="btnBuildRag" title="RAG-Anything：把 reference_papers 下全部 PDF 的图/表/公式解析入多模态知识图谱。上传参考文献时已自动入库，此按钮用于手动批量/补齐">更新</button>
+          </div>
+          <div class="kb-hint">✓ 已持久化保存，重启自动加载，无需重复构建</div>
+        </div>
+      </div>
 
       <div class="sb-foot">
         <span class="auth-chip" id="authChip"></span>
@@ -94,7 +144,7 @@
       </div>
 
       <div class="main-body dual">
-        <!-- ===== 左：对话（与论文并存） ===== -->
+        <!-- ===== 左：对话（右侧主区不变；项目/知识库在侧栏列表区原地切换） ===== -->
         <section class="dual-chat" id="chatPane">
           <div class="chat-area" id="chatArea"></div>
           <div class="attach-bar" id="attachBar"></div>
@@ -264,53 +314,8 @@
     </main>
   </div>
 
-  <!-- ============ 抽屉：项目与文件（从侧栏唤出） ============ -->
-  <div class="drawer-scrim" id="drawerScrim" style="display:none;"></div>
-  <div class="sb-scrim" id="sbScrim"></div>
-  <div class="drawer" id="drawerProjects" style="display:none;">
-    <div class="drawer-head">
-      <span>项目与文件</span>
-      <span>
-        <span class="act" id="btnSetRoot" title="新建/切换工作区：选择新的根目录，会话与生成物自动跟随">＋ 新建工作区</span>
-        <span class="act" id="btnRefreshProjects">刷新</span>
-        <button class="btn-mini" data-drawer-close aria-label="关闭抽屉">✕</button>
-      </span>
-    </div>
-    <div class="drawer-body">
-      <div class="drawer-label">研究项目</div>
-      <div id="projectList"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
-      <div class="drawer-label" style="margin-top:14px;">文件树 <span style="color:var(--text-dim);font-weight:400;font-size:11px;">拖拽 / 右键添加到会话</span></div>
-      <div class="file-tree" id="fileTree">
-        <div class="empty-hint">先选择一个项目</div>
-      </div>
-    </div>
-  </div>
-  <div class="drawer" id="drawerKb" style="display:none;">
-    <div class="drawer-head">
-      <span>知识库</span>
-      <span><span class="act" id="btnKbStatus">状态</span><button class="btn-mini" data-drawer-close style="margin-left:8px;">✕</button></span>
-    </div>
-    <div class="drawer-body">
-      <div class="kb-row">
-        <span class="kb-name">方法原论文</span>
-        <span class="kb-count" id="kbMethods">-</span>
-        <button class="btn-mini" id="btnBuildMethods" title="知识库已持久化，启动自动加载，平时无需点击。仅在注册表新增方法/文献后需要更新时使用">更新</button>
-      </div>
-      <div class="kb-row">
-        <span class="kb-name">写作教学库</span>
-        <span class="kb-count" id="kbWriting">-</span>
-        <button class="btn-mini" id="btnBuildWriting" title="知识库已持久化，启动自动加载，平时无需点击。仅在补充新教材/B站字幕时使用">更新</button>
-      </div>
-      <div class="kb-row">
-        <span class="kb-name">多模态文献库</span>
-        <span class="kb-count" id="kbRagDocs">-</span>
-        <button class="btn-mini" id="btnBuildRag" title="RAG-Anything：把 reference_papers 下全部 PDF 的图/表/公式解析入多模态知识图谱。上传参考文献时已自动入库，此按钮用于手动批量/补齐">更新</button>
-      </div>
-      <div class="kb-hint">✓ 已持久化保存，重启自动加载，无需重复构建</div>
-    </div>
-  </div>
-
   <!-- 右键菜单 -->
+  <div class="sb-scrim" id="sbScrim"></div>
   <div class="context-menu" id="contextMenu">
     <div class="item" id="ctxAddToSession">➕ 添加到当前会话（插入光标处）</div>
     <div class="item" id="ctxAddDir" style="display:none;">📁 添加文件夹引用</div>
