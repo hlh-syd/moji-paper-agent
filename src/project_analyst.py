@@ -79,19 +79,25 @@ class ProjectAnalyst:
         复用共享实例会把绑定在其它 loop 的 httpx 连接池带进来导致挂死"""
         try:
             from langchain_openai import ChatOpenAI
+            from src.model_registry import resolve_model
             cfg = self.config or self.llm_manager.config
             model = (getattr(cfg.models, "analyst_llm", "") or cfg.models.llm)
+            route = resolve_model(model, cfg)
+            if not route.api_key:
+                raise RuntimeError(f"{route.key_env} 未配置，无法调用项目理解模型")
             from src.observability import attach_llm_observer
-            return attach_llm_observer(ChatOpenAI(
-                model=model,
-                api_key=cfg.zhipu.resolve_api_key(),
-                base_url=cfg.zhipu.base_url,
+            kwargs = dict(
+                model=route.model,
+                api_key=route.api_key,
+                base_url=route.base_url,
                 temperature=cfg.models.temperature,
                 max_tokens=cfg.models.max_tokens,
-                timeout=cfg.zhipu.timeout,
+                timeout=route.timeout,
                 streaming=False,
-                extra_body={"thinking": {"type": "disabled"}},
-            ), )
+            )
+            if route.extra_body:
+                kwargs["extra_body"] = route.extra_body
+            return attach_llm_observer(ChatOpenAI(**kwargs), )
         except Exception:
             return self.llm_manager.get_main_llm()
 

@@ -20,6 +20,7 @@ raganything>=1.4.1
 pypdf>=4.0.0
 python-docx>=1.1.0
 pdfplumber>=0.11  # 模板论文 PDF 格式档案提取（通道A）
+pymupdf>=1.24     # 朱雀检测报告 PDF 片段定位（按文本块坐标解析 NO./AIGC 值）
 yt-dlp>=2025.1.1  # B站字幕抓取
 latex2mathml>=3.7  # LaTeX 公式→Word 原生公式（后备导出链）
 mathml2omml>=0.0.2

@@ -12,6 +12,7 @@ from langchain_openai import ChatOpenAI
 from langchain_ollama import OllamaLLM, OllamaEmbeddings
 
 from src.config import AppConfig, get_config_manager
+from src.model_registry import resolve_model
 from src.observability import attach_llm_observer
 
 logger = logging.getLogger(__name__)
@@ -29,33 +30,35 @@ class LLMManager:
         self._init_small_llm()
         self._init_embeddings()
 
-    # ---------- 主通道：智谱 ----------
+    # ---------- 主通道：智谱 / DeepSeek ----------
     def _init_main_llm(self):
-        """初始化智谱主写作模型（OpenAI 兼容接口）"""
-        api_key = self.config.zhipu.resolve_api_key()
-        if not api_key:
+        """初始化主写作模型（OpenAI 兼容接口）：按模型名自动选择供应商"""
+        route = resolve_model(self.config.models.llm, self.config)
+        self._main_route = route
+        if not route.api_key:
             logger.warning(
-                "未配置 ZHIPU_API_KEY，主写作通道不可用（大纲/正文生成将失败）。"
-                "请在 论文智能体/.env 中设置 ZHIPU_API_KEY=..."
+                f"未配置 {route.key_env}，{route.label}主写作通道不可用（大纲/正文生成将失败）。"
+                "请在设置页填写 API Key，或在 论文智能体/.env 中设置"
             )
             self.main_llm = None
             return
         try:
-            self.main_llm = ChatOpenAI(
-                model=self.config.models.llm,
-                api_key=api_key,
-                base_url=self.config.zhipu.base_url,
+            kwargs = dict(
+                model=route.model,
+                api_key=route.api_key,
+                base_url=route.base_url,
                 temperature=self.config.models.temperature,
                 max_tokens=self.config.models.max_tokens,
-                timeout=self.config.zhipu.timeout,
+                timeout=route.timeout,
                 streaming=True,
-                # GLM-4.x 系列关闭深度思考，输出干净正文、速度更快
-                extra_body={"thinking": {"type": "disabled"}},
             )
+            if route.extra_body:
+                kwargs["extra_body"] = route.extra_body
+            self.main_llm = ChatOpenAI(**kwargs)
             attach_llm_observer(self.main_llm, "main")
-            logger.info(f"智谱主写作模型初始化成功: {self.config.models.llm}")
+            logger.info(f"{route.label}主写作模型初始化成功: {route.model}")
         except Exception as e:
-            logger.error(f"智谱主写作模型初始化失败: {e}")
+            logger.error(f"{route.label}主写作模型初始化失败: {e}")
             self.main_llm = None
 
     def reinit_main_llm(self):
@@ -108,7 +111,9 @@ class LLMManager:
 
     def get_main_llm(self):
         if self.main_llm is None:
-            raise RuntimeError("智谱主写作模型未初始化：请设置 ZHIPU_API_KEY 并重启服务")
+            route = getattr(self, "_main_route", None)
+            env = route.key_env if route else "ZHIPU_API_KEY"
+            raise RuntimeError(f"主写作模型未初始化：请配置 {env} 并重启服务")
         return self.main_llm
 
     def get_small_llm(self):
@@ -122,9 +127,14 @@ class LLMManager:
         return self.embeddings
 
     def get_model_info(self) -> Dict[str, Any]:
+        route = getattr(self, "_main_route", None)
         return {
-            "provider": self.config.models.provider,
+            "provider": route.provider if route else self.config.models.provider,
+            "provider_label": route.label if route else "",
+            "api_model": route.model if route else self.config.models.llm,
             "main_llm": self.config.models.llm,
+            "analyst_llm": getattr(self.config.models, "analyst_llm", ""),
+            "vision_llm": getattr(getattr(self.config, "vision", None), "model", ""),
             "main_llm_available": self.main_llm is not None,
             "small_llm": self.config.models.small_llm,
             "small_llm_available": self.small_llm is not None,

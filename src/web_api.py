@@ -12,6 +12,7 @@ Web API 模块（论文写作智能体）
 """
 import asyncio
 import json
+import os
 import re
 import logging
 from datetime import datetime
@@ -27,6 +28,7 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 from src.config import get_config_manager
+from src.model_registry import MODEL_OPTIONS, resolve_model
 from src.llm_manager import LLMManager
 from src.vector_store import VectorStoreManager
 from src.project_indexer import ProjectIndexer
@@ -476,6 +478,13 @@ def _safe(name: str) -> str:
     return re.sub(r"[^\w\-]+", "_", name).strip("_")
 
 
+def _download_name(title: str) -> str:
+    """论文标题 → 可下载文件名：剔除 Windows 非法字符与首尾空白/点，限长 100 字。"""
+    clean = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", title or "").strip(" .")
+    clean = re.sub(r"\s+", " ", clean)
+    return clean[:100].rstrip(" .")
+
+
 def _restore_conversations(system: PaperAgentSystem, sessions: Optional[List[dict]] = None):
     """把持久化的会话消息还原进后端对话管理器（LLM 上下文跨重启保持）。
     会话键统一加 owner 前缀，跨用户不可见"""
@@ -582,11 +591,24 @@ def create_app() -> FastAPI:
 
     @app.put("/api/workspace")
     async def workspace_put(state: dict = Body(...)):
-        """保存工作区状态；并把会话历史同步进后端对话管理器（保证 LLM 上下文跨重启）"""
+        """保存工作区状态；并把会话历史同步进后端对话管理器（保证 LLM 上下文跨重启）。
+
+        rev 乐观锁 + 根目录保护：
+        - 每次落盘 rev+1；携带旧 rev 的保存（残留的未刷新标签页）直接 409 拒绝，
+          防止旧内存状态把新工作区根目录/会话覆盖回去；
+        - workspace_root 只能经 POST /api/workspace/root 变更——PUT 一律保留服务端已存值。
+        """
+        stored = workspace_store.load_state() or {}
+        stored_rev = int(stored.get("rev") or 0)
+        incoming_rev = int(state.get("rev") or 0)
+        if incoming_rev < stored_rev:
+            raise HTTPException(status_code=409, detail="stale-state")
+        state["rev"] = stored_rev + 1
+        state["workspace_root"] = stored.get("workspace_root") or state.get("workspace_root") or ""
         sessions = state.get("sessions", [])
         path = workspace_store.save_state(state)  # 落盘到当前用户的 state 文件
         _restore_conversations(system, sessions)
-        return {"ok": True, "saved_to": path}
+        return {"ok": True, "saved_to": path, "rev": state["rev"]}
 
     @app.get("/api/fs/list")
     async def fs_list(path: str = Query("", description="目录路径；空=盘符列表/用户主目录")):
@@ -627,8 +649,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=f"目录不存在: {root}")
         prev = workspace_store.load_state() or {}  # 当前用户的 state
         prev["workspace_root"] = root
+        # 全量切换：切根即脱离旧工作区——携带的旧项目与顶层会话一并清空，
+        # 防止页面在后续保存落盘前中断/刷新时又把 A 工作区的项目、大纲、论文带回来
+        prev["active_project"] = None
+        prev["sessions"] = []
+        prev["rev"] = int(prev.get("rev") or 0) + 1  # 切根也推进版本：旧标签随后的保存一律 409
         workspace_store.save_state(prev)
-        return {"ok": True, "workspace_root": root,
+        return {"ok": True, "workspace_root": root, "rev": prev["rev"],
                 "candidates": system.indexer.list_projects(root)}
 
     # ---------- 系统 ----------
@@ -655,7 +682,10 @@ def create_app() -> FastAPI:
                            version=system.config.system.version)
 
     # ---------- 设置：模型等运行配置（读 + 热更新，写入 config.yaml） ----------
-    _MODEL_WHITELIST = ["glm-5.3", "glm-5.3-flash"]  # 全站模型白名单（Coding Plan 端点）
+    _MODEL_WHITELIST = MODEL_OPTIONS  # 全站模型白名单（智谱 Coding Plan + DeepSeek）
+
+    def _mask_key(k: Optional[str]) -> str:
+        return (k[:3] + "…" + k[-4:]) if k and len(k) > 8 else ("已配置" if k else "")
 
     def _zhuque_key_state() -> dict:
         from src.zhuque_client import _load_key
@@ -664,8 +694,17 @@ def create_app() -> FastAPI:
                 "masked": (k[:3] + "…" + k[-4:]) if k and len(k) > 8 else "",
                 "note": "腾讯朱雀 AI 检测（EdgeOne 网关），月免费 50 万 token"}
 
+    def _deepseek_key_state() -> dict:
+        d = system.config.deepseek
+        k = d.resolve_api_key()
+        return {"configured": bool(k), "masked": _mask_key(k),
+                "base_url": d.base_url, "model_id": d.model_id,
+                "api_key_env": d.api_key_env,
+                "display_model": "deepseek-4.1-flash",
+                "note": "DeepSeek OpenAI 兼容接口：写作 / 项目理解 / 图片理解可按模型名自动路由"}
+
     def _write_env_key(name: str, value: str) -> None:
-        """写入/更新 .env 中的 KEY=value 行（保留其他行）"""
+        """写入/更新 .env 中的 KEY=value 行（保留其他行），并同步进程环境变量（免重启生效）"""
         from pathlib import Path as _P
         env = _P("src").resolve().parents[0] / ".env"
         lines = env.read_text(encoding="utf-8").splitlines() if env.exists() else []
@@ -678,6 +717,7 @@ def create_app() -> FastAPI:
         if not hit:
             lines.append(f"{name}={value}")
         env.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.environ[name] = value
 
     @app.get("/api/settings")
     async def get_settings():
@@ -695,6 +735,7 @@ def create_app() -> FastAPI:
             "options": {"llm": _MODEL_WHITELIST, "analyst_llm": _MODEL_WHITELIST,
                         "vision": _MODEL_WHITELIST},
             "zhuque": _zhuque_key_state(),
+            "deepseek": _deepseek_key_state(),
         }
 
     @app.post("/api/settings")
@@ -702,6 +743,7 @@ def create_app() -> FastAPI:
                               user: dict = Depends(_admin_dep)):
         """系统级设置（模型/密钥）影响全体用户：仅管理员可改"""
         updates: Dict[str, Any] = {}
+        key_written = False
         m = payload.get("models") or {}
         md = {k: m[k] for k in ("llm", "analyst_llm", "small_llm", "temperature", "max_tokens")
               if k in m}
@@ -716,13 +758,30 @@ def create_app() -> FastAPI:
             raise HTTPException(400, f"视觉模型仅支持：{'、'.join(_MODEL_WHITELIST)}")
         if vd:
             updates["vision"] = vd
+        # DeepSeek 接口：key 写 .env；地址 / 真实模型 ID 写 config.yaml
+        ds = payload.get("deepseek") or {}
+        dd: Dict[str, Any] = {}
+        if ds.get("base_url") is not None and str(ds["base_url"]).strip():
+            b = str(ds["base_url"]).strip().rstrip("/")
+            if not (b.startswith("http://") or b.startswith("https://")):
+                raise HTTPException(400, "DeepSeek 接口地址需以 http:// 或 https:// 开头")
+            dd["base_url"] = b
+        if ds.get("model_id") is not None and str(ds["model_id"]).strip():
+            dd["model_id"] = str(ds["model_id"]).strip()
+        if dd:
+            updates["deepseek"] = dd
+        dk = ds.get("api_key")
+        if dk is not None and str(dk).strip():
+            _write_env_key("DEEPSEEK_API_KEY", str(dk).strip())
+            key_written = True
         zk = (payload.get("zhuque") or {}).get("api_key") or payload.get("zhuque_key")
         if zk is not None and str(zk).strip():
             _write_env_key("ZHUQUE_API_KEY", str(zk).strip())
+            key_written = True
         if not updates:
-            if zk is not None and str(zk).strip():
-                return {"ok": True, "applied": {"zhuque_key": "updated"},
-                        "zhuque": _zhuque_key_state()}
+            if key_written:
+                return {"ok": True, "applied": {"key": "updated"},
+                        "zhuque": _zhuque_key_state(), "deepseek": _deepseek_key_state()}
             raise HTTPException(400, "没有可更新的字段")
         mgr = get_config_manager()
         mgr.update_config(updates)
@@ -733,11 +792,23 @@ def create_app() -> FastAPI:
         system.llm_manager.reinit_main_llm()
         try:
             system.vision.config = mgr.config
+            system.vision.reload_config()
+            if getattr(system, "analyst", None) is not None:
+                system.analyst.config = mgr.config
             if getattr(system, "rag_engine", None) is not None:
                 system.rag_engine.config = mgr.config
         except Exception:
             pass
-        return {"ok": True, "applied": updates}
+        # 选用了 DeepSeek 但 key 未填：明确提示，避免静默降级
+        warnings = []
+        for label, model in (("主写作模型", mgr.config.models.llm),
+                             ("项目理解模型", getattr(mgr.config.models, "analyst_llm", "")),
+                             ("视觉模型", mgr.config.vision.model)):
+            route = resolve_model(model, mgr.config)
+            if route.provider == "deepseek" and not route.api_key:
+                warnings.append(f"{label}已选 DeepSeek，但 DEEPSEEK_API_KEY 未配置")
+        return {"ok": True, "applied": updates, "warnings": warnings,
+                "zhuque": _zhuque_key_state(), "deepseek": _deepseek_key_state()}
 
     # ---------- 认证与用户管理（RBAC） ----------
     @app.get("/api/auth/status")
@@ -1641,12 +1712,23 @@ def create_app() -> FastAPI:
         doc_id: str
         paras: List[int] = Field(..., description="要改写的段落下标（可多选）")
 
+    class DocApplyRequest(BaseModel):
+        doc_id: str
+        project_name: str
+
     def _public_doc(doc: dict) -> dict:
+        from src import doc_check as _dc
         paras = doc.get("paragraphs") or []
         return {"id": doc["id"], "filename": doc["filename"], "ext": doc.get("ext"),
                 "uploaded_at": doc.get("uploaded_at"),
                 "paras": len(paras), "chars": sum(len(p) for p in paras),
                 "previews": [p.strip()[:110] for p in paras],
+                "para_stats": [{
+                    "chars": len(p),
+                    "rewritable": len(p.strip()) >= _dc._MIN_REWRITE_CHARS
+                    and not p.lstrip("*").strip().startswith(("#", "|", "```")),
+                } for p in paras],
+                "marks": doc.get("marks", []),
                 "history": doc.get("history", [])[-8:]}
 
     @app.post("/api/doccheck/upload")
@@ -1676,6 +1758,101 @@ def create_app() -> FastAPI:
                           "chars": sum(len(p) for p in doc["paragraphs"])})
         return {"ok": True, "doc": _public_doc(doc),
                 "humanize": await asyncio.to_thread(doc_check.humanize_status)}
+
+    @app.post("/api/doccheck/import-report")
+    async def doccheck_import_report(file: UploadFile = File(...),
+                                     project_name: str = Query("", description="当前任务项目名（核验用）")):
+        """导入外部 AI 检测报告：保留段落并提取高亮/警示色/关键词/表格百分比标记；
+        随后与当前任务论文做重合度核验（第一道闸门）"""
+        from src import doc_check
+        ext = Path(file.filename or "").suffix.lower()
+        if ext not in doc_check.ALLOWED_EXTS:
+            hint = "Word 老格式请另存为 .docx 后上传" if ext == ".doc" else \
+                f"仅支持 {', '.join(sorted(doc_check.ALLOWED_EXTS))}"
+            raise HTTPException(status_code=400,
+                                detail=f"不支持的格式「{ext or '无扩展名'}」：{hint}")
+        data = await file.read()
+        if len(data) > doc_check.MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=400, detail="文件超过 20MB")
+        import uuid as _uuid
+        token = _uuid.uuid4().hex[:10]
+        # 先取当前任务论文正文：PDF 报告会用它把片段对齐到论文真实段落（回写可精确命中）
+        paper_text, paper_title = "", ""
+        if project_name:
+            outline = system.outline_generator.load_outline(project_name)
+            if outline:
+                secs = [s for s in outline.get("sections", [])
+                        if (s.get("content") or "").strip()]
+                paper_text = "\n".join(
+                    f"{s.get('title', '')}\n{s['content'].strip()}" for s in secs)
+                paper_title = outline.get("paper_title") or project_name
+        try:
+            doc = await asyncio.to_thread(doc_check.create_report_doc,
+                                          data, file.filename, token, paper_text)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        verify = await asyncio.to_thread(doc_check.verify_against_paper,
+                                         doc, paper_text, paper_title)
+        obs.log_span("doccheck.import_report", kind="node",
+                     in_={"name": file.filename, "bytes": len(data),
+                          "project": project_name},
+                     out={"paras": len(doc["paragraphs"]), "marks": len(doc.get("marks", [])),
+                          "verify": verify.get("score")})
+        return {"ok": True, "doc": _public_doc(doc), "verify": verify,
+                "humanize": await asyncio.to_thread(doc_check.humanize_status)}
+
+    @app.post("/api/doccheck/apply-to-paper")
+    async def doccheck_apply_to_paper(req: DocApplyRequest):
+        """把最近一次 9B 改写结果回写到当前任务论文（仅导入报告模式使用；
+        前端已通过核验；逐段按归一化文本定位，定位不到则跳过）"""
+        from src import doc_check
+        try:
+            doc = doc_check.load_doc(req.doc_id)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        changes = doc_check.latest_changes(doc)
+        if not changes:
+            raise HTTPException(status_code=400, detail="该文档还没有可回写的 9B 改写记录")
+        outline = system.outline_generator.load_outline(req.project_name)
+        if outline is None:
+            raise HTTPException(status_code=404, detail=f"项目尚无大纲: {req.project_name}")
+        secs = outline.get("sections") or []
+        applied, skipped, touched = [], [], []
+
+        for ch in changes:
+            before, after = ch.get("before") or "", ch.get("after") or ""
+            hit = False
+            for sec in secs:
+                content = sec.get("content") or ""
+                new_content, ok = doc_check.replace_in_text(content, before, after)
+                if ok:
+                    sec["content"] = new_content
+                    sec["actual_words"] = count_cn_words(new_content)
+                    if not (sec.get("status") == "drafted"):
+                        sec["status"] = "drafted"
+                    label = sec.get("title") or sec.get("id") or "未命名节"
+                    if label not in touched:
+                        touched.append(label)
+                    hit = True
+                    break
+            (applied if hit else skipped).append(ch.get("idx"))
+        if not applied:
+            raise HTTPException(status_code=409,
+                                detail="改写段落未能在当前论文中定位（论文可能已改动，请重新生成/核验）")
+        system.outline_generator.save_outline(req.project_name, outline)
+        doc.setdefault("history", []).append({
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "action": "apply_to_paper", "project": req.project_name,
+            "applied": len(applied), "skipped": len(skipped),
+        })
+        doc_check.save_doc(doc)
+        obs.log_span("doccheck.apply_to_paper", kind="node",
+                     in_={"project": req.project_name, "doc": req.doc_id},
+                     out={"applied": len(applied), "skipped": len(skipped),
+                          "sections": len(touched)})
+        return {"ok": True, "applied": len(applied), "skipped": len(skipped),
+                "sections": touched}
 
     @app.get("/api/doccheck/doc/{doc_id}")
     async def doccheck_get(doc_id: str):
@@ -1999,11 +2176,15 @@ def create_app() -> FastAPI:
             except Exception as e:
                 logger.error(f"导出失败: {e}", exc_info=True)
                 raise HTTPException(status_code=500, detail=str(e))
-        # 下载名带时间戳：浏览器不再为同名文件堆 (1)(2)(3)… 副本
+        # 下载名默认取论文标题；未设置标题时才回退「项目名.论文草稿_时间戳」
         file = Path(path)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        return FileResponse(
-            str(file), media_type=media, filename=f"{file.stem}_{ts}{file.suffix}")
+        title_name = _download_name(str(outline.get("paper_title") or ""))
+        if title_name:
+            download_name = f"{title_name}{file.suffix}"
+        else:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            download_name = f"{file.stem}_{ts}{file.suffix}"
+        return FileResponse(str(file), media_type=media, filename=download_name)
 
     # ---------- 会话聊天 ----------
     @app.post("/api/chat/stream")

@@ -28,23 +28,35 @@ class VisionAgent:
     """多模态视觉子代理"""
 
     def __init__(self, config):
-        v = getattr(config, "vision", None)
+        self.config = config
+        self._client = None
+        self._client_sig = None
+        self._api_model = None
+        self.reload_config()
+
+    def reload_config(self):
+        """设置页热更新后刷新模型/端点（同时丢弃旧客户端）"""
+        v = getattr(self.config, "vision", None)
         self.enabled = bool(v and v.enabled)
         self.model = v.model if v else "glm-5.3-flash"
         self.base_url = v.base_url if v else "https://open.bigmodel.cn/api/coding/paas/v4/"
         self.timeout = v.timeout if v else 120
         self.max_images = v.max_images if v else 4
         self._client = None
+        self._client_sig = None
 
     def _get_client(self):
-        if self._client is None:
-            import os
+        from src.model_registry import resolve_model
+        route = resolve_model(self.model, self.config)
+        if not route.api_key:
+            raise RuntimeError(f"{route.key_env} 未配置，视觉代理不可用")
+        sig = (route.api_key, route.base_url)
+        if self._client is None or self._client_sig != sig:
             from openai import AsyncOpenAI
-            api_key = os.environ.get("ZHIPU_API_KEY")
-            if not api_key:
-                raise RuntimeError("ZHIPU_API_KEY 未配置，视觉代理不可用")
-            self._client = AsyncOpenAI(api_key=api_key, base_url=self.base_url,
+            self._client = AsyncOpenAI(api_key=route.api_key, base_url=route.base_url,
                                        timeout=self.timeout)
+            self._client_sig = sig
+        self._api_model = route.model
         return self._client
 
     @staticmethod
@@ -73,7 +85,7 @@ class VisionAgent:
             user_text = question.strip() or "请描述这张图片的内容。"
             prompt = f"图片文件名：{fig_name or '（未命名）'}\n用户问题：{user_text}"
             resp = await client.chat.completions.create(
-                model=self.model,
+                model=self._api_model or self.model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": [

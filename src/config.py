@@ -32,6 +32,24 @@ class ZhipuConfig(BaseModel):
         return os.environ.get(self.api_key_env)
 
 
+class DeepSeekConfig(BaseModel):
+    """DeepSeek OpenAI 兼容 API 配置（写作/项目理解/图片理解可选通道）
+
+    界面选项 deepseek-4.1-flash 只是展示名；真正请求的模型 ID 由 model_id 决定，
+    可在设置页或 config.yaml 中按实际网关修改。
+    """
+    base_url: str = "https://api.deepseek.com"
+    api_key_env: str = "DEEPSEEK_API_KEY"
+    model_id: str = "deepseek-flash"
+    timeout: int = 300
+
+    def resolve_api_key(self) -> Optional[str]:
+        direct = getattr(self, "api_key", None)
+        if direct:
+            return direct
+        return os.environ.get(self.api_key_env)
+
+
 class QualityConfig(BaseModel):
     """质量管线配置：择优/审稿轮次"""
     bestof_n: int = 3
@@ -189,6 +207,7 @@ class AppConfig(BaseModel):
     system: SystemConfig = Field(default_factory=SystemConfig)
     models: ModelConfig = Field(default_factory=ModelConfig)
     zhipu: ZhipuConfig = Field(default_factory=ZhipuConfig)
+    deepseek: DeepSeekConfig = Field(default_factory=DeepSeekConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     quality: QualityConfig = Field(default_factory=QualityConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)

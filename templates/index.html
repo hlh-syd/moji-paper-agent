@@ -437,9 +437,9 @@
         <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
       </div>
       <div class="fp-foot">
-        <span class="fp-hint" id="fpHint"></span>
+        <span class="fp-hint" id="fpHint">单击进入目录 · 双击直接选定</span>
         <button class="btn-mini" id="fpCancel">取消</button>
-        <button class="btn-mini primary" id="fpChoose">选择当前目录</button>
+        <button class="btn-mini primary" id="fpChoose">✓ 选定当前目录</button>
       </div>
     </div>
   </div>
@@ -554,13 +554,13 @@
           <div class="sp-h2sub">管理写作/理解/视觉模型与生成参数 · 保存即写入 config.yaml 并热生效（无需重启）</div>
           <div class="set-card">
             <div class="sp-row"><div class="sp-txt"><div class="sp-label">主写作模型</div>
-              <div class="sp-desc">大纲 / 正文 / 自查等重任务（智谱 Coding Plan 通道）</div></div>
+              <div class="sp-desc">大纲 / 正文 / 自查等重任务（按模型名自动路由：智谱 / DeepSeek）</div></div>
               <div class="sp-ctl"><select data-set="llm" class="sp-select" style="width:230px;"></select></div></div>
             <div class="sp-row"><div class="sp-txt"><div class="sp-label">项目理解模型</div>
               <div class="sp-desc">「🧠 理解项目」Agent 的扫描分析与《研究项目主体》合成</div></div>
               <div class="sp-ctl"><select data-set="analyst_llm" class="sp-select" style="width:230px;"></select></div></div>
             <div class="sp-row"><div class="sp-txt"><div class="sp-label">视觉模型</div>
-              <div class="sp-desc">图片分析与多模态文献解析（5.3 系列中原生多模态）</div></div>
+              <div class="sp-desc">图片分析与多模态文献解析（glm-5.3-flash 或 DeepSeek 多模态）</div></div>
               <div class="sp-ctl"><select data-set="vision_model" class="sp-select" style="width:230px;"></select></div></div>
             <div class="sp-row"><div class="sp-txt"><div class="sp-label">本地小模型</div>
               <div class="sp-desc">Ollama 本地模型：意图路由 / 查询改写（保存后需重启服务生效）</div></div>
@@ -568,6 +568,18 @@
             <div class="sp-row"><div class="sp-txt"><div class="sp-label">嵌入模型</div>
               <div class="sp-desc">只读：切换嵌入需重建知识库，如需修改请在 config.yaml 中变更</div></div>
               <div class="sp-ctl"><input type="text" data-set="embedding" class="sp-input" style="width:230px;" disabled></div></div>
+          </div>
+          <div class="sp-h2">DeepSeek 接口</div>
+          <div class="set-card">
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">DeepSeek API Key</div>
+              <div class="sp-desc" id="deepseekKeyState">未配置 · 选择 deepseek-4.1-flash 前请先填写（写入 .env，保存即生效）</div></div>
+              <div class="sp-ctl"><input type="password" data-set="deepseek_key" class="sp-input" style="width:230px;" placeholder="sk-…（未配置）" autocomplete="off"></div></div>
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">接口地址</div>
+              <div class="sp-desc">OpenAI 兼容端点；使用第三方网关时按网关文档修改</div></div>
+              <div class="sp-ctl"><input type="text" data-set="deepseek_base_url" class="sp-input" style="width:230px;" placeholder="https://api.deepseek.com"></div></div>
+            <div class="sp-row"><div class="sp-txt"><div class="sp-label">真实模型 ID</div>
+              <div class="sp-desc">发给服务端的 model 名（界面选项 deepseek-4.1-flash；官方为 deepseek-flash）</div></div>
+              <div class="sp-ctl"><input type="text" data-set="deepseek_model_id" class="sp-input" style="width:230px;" placeholder="deepseek-flash"></div></div>
           </div>
           <div class="sp-h2">生成参数</div>
           <div class="set-card">
@@ -579,7 +591,7 @@
               <div class="sp-ctl sp-num"><input type="number" data-set="max_tokens" min="4096" max="65536" step="1024" class="sp-input" style="width:110px;"></div></div>
           </div>
           <div class="sp-actions">
-            <span class="uw-foot-note">主模型 / 温度等保存后立即应用于后续生成任务</span>
+            <span class="uw-foot-note">模型 / 温度 / DeepSeek 接口保存后立即应用于后续任务</span>
             <button class="btn-mini" id="settingsCancel">取消</button>
             <button class="btn-mini primary" id="settingsSave">保存并生效</button>
           </div>
@@ -658,6 +670,6 @@
   </div>
 
   <script src="/static/js/ui.js?v=62"></script>
-  <script src="/static/js/app.js?v=62"></script>
+  <script src="/static/js/app.js?v=63"></script>
 </body>
 </html>

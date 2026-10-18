@@ -340,20 +340,6 @@ body.is-generating .status-dot {
 .project-item .badge.outline {
   background: var(--green-soft);
   color: var(--green);
-
-/* 从列表隐藏的项目：底部恢复入口 */
-.project-restore {
-  margin-top: 8px;
-  padding: 7px 10px;
-  font-size: 11px;
-  color: var(--text-faint);
-  text-align: center;
-  border: 1px dashed var(--wash-3);
-  border-radius: var(--radius-s);
-  cursor: pointer;
-  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
-}
-.project-restore:hover { color: var(--accent); border-color: var(--accent); }
 }
 
 /* 文件树 */
@@ -2981,6 +2967,52 @@ select.tselect-native { display: none !important; }
 .aic-para-st.run { color: var(--accent); }
 .aic-para-st.ok { color: var(--green); }
 .aic-para-st.fail { color: var(--red); }
+
+/* 导入检测文档：论文核验卡 / 报告标记 / 回写当前论文 */
+.aic-verify {
+  margin-bottom: 10px; padding: 11px 13px;
+  border: 1px solid var(--border); border-radius: 11px;
+  background: var(--bg-elev);
+  font-size: 12.5px; line-height: 1.55;
+}
+.aic-verify.ok {
+  border-color: color-mix(in srgb, var(--green) 38%, transparent);
+  background: var(--green-soft);
+}
+.aic-verify.bad {
+  border-color: color-mix(in srgb, var(--red) 40%, transparent);
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+}
+.aic-verify.warn {
+  border-color: color-mix(in srgb, var(--orange) 38%, transparent);
+  background: var(--orange-soft);
+}
+.aic-vf-main { font-weight: 600; color: var(--text); }
+.aic-verify.ok .aic-vf-main { color: var(--green); }
+.aic-verify.bad .aic-vf-main { color: var(--red); }
+.aic-verify.warn .aic-vf-main { color: var(--orange); }
+.aic-vf-sub { margin-top: 3px; font-size: 11.5px; color: var(--text-dim); }
+.aic-para-marktag {
+  flex: none; margin-top: 1px; padding: 1px 6px;
+  font-size: 9.5px; font-weight: 700; white-space: nowrap;
+  color: var(--red); border-radius: 99px;
+  border: 1px solid color-mix(in srgb, var(--red) 30%, transparent);
+  background: color-mix(in srgb, var(--red) 13%, transparent);
+}
+.aic-para-marktag.medium {
+  color: var(--orange);
+  border-color: color-mix(in srgb, var(--orange) 34%, transparent);
+  background: var(--orange-soft);
+}
+.aic-para.marked { background: color-mix(in srgb, var(--red) 4.5%, transparent); }
+.aic-para.marked:has(input:checked) { background: var(--accent-soft); }
+.aic-apply-bar {
+  display: flex; align-items: center; gap: 9px;
+  margin-top: 10px; padding: 10px 12px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 42%, transparent);
+  border-radius: 10px; background: var(--accent-soft);
+}
+.aic-apply-bar .aic-hint { color: var(--text-dim); }
 .aic-cmp {
   border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
   border-radius: 12px;

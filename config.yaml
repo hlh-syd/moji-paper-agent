@@ -3,6 +3,11 @@ conversation:
   max_messages: 50
   summary_interval: 5
   summary_min_messages: 8
+deepseek:
+  api_key_env: DEEPSEEK_API_KEY
+  base_url: https://api.deepseek.com
+  model_id: deepseek-flash
+  timeout: 300
 export_style:
   body_align: justify
   body_font_px: 16.0
@@ -19,16 +24,16 @@ knowledge_base:
   registry_dir: ./ingestion
   writing_dir: ./knowledge_base/writing_methodology
 logging:
+  backup_count: 5
+  file: logs/paper_agent.log
+  format: json
   level: INFO
-  file: logs/paper_agent.log   # 全链路日志（自动附 [trace user]，按大小轮转）
-  format: json                 # text | json（json 接 ELK/Loki 免解析）
-  rotate_mb: 10                # 单文件 10MB，超出轮转
-  backup_count: 5              # 保留 5 份历史
-  llm_calls: true              # LLM 调用观测 → logs/llm_calls.jsonl
+  llm_calls: true
+  rotate_mb: 10
 models:
-  analyst_llm: glm-5.3-flash
+  analyst_llm: deepseek-4.1-flash
   embedding: bge-m3
-  llm: glm-5.3
+  llm: deepseek-4.1-flash
   max_tokens: 16384
   provider: zhipu
   small_llm: qwen3:4b-instruct
@@ -137,7 +142,7 @@ vision:
   enabled: true
   max_images: 4
   max_profile_images: 24
-  model: glm-5.3-flash
+  model: deepseek-4.1-flash
   timeout: 120
 workspace:
   exclude_dirs: []
