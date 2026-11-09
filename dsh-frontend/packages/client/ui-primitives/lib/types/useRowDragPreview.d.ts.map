@@ -1,0 +1,1 @@
+{"version":3,"file":"useRowDragPreview.d.ts","sourceRoot":"","sources":["../../src/useRowDragPreview.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAAE,SAAS,EAAE,MAAM,OAAO,CAAA;AAItC;;;;;;;;;;GAUG;AACH,wBAAgB,iBAAiB,CAAC,SAAS,EAAE,MAAM,GAAG;IACpD,KAAK,EAAE,CAAC,KAAK,EAAE,SAAS,CAAC,WAAW,CAAC,EAAE,GAAG,CAAC,EAAE,WAAW,KAAK,IAAI,CAAA;IACjE,KAAK,EAAE,MAAM,OAAO,CAAA;CACrB,CAiDA"}

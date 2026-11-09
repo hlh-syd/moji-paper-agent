@@ -44,6 +44,7 @@ class VisionAgent:
         self.max_images = v.max_images if v else 4
         self._client = None
         self._client_sig = None
+        self._extra_body: dict = {}
 
     def _get_client(self):
         from src.model_registry import resolve_model
@@ -57,6 +58,7 @@ class VisionAgent:
                                        timeout=self.timeout)
             self._client_sig = sig
         self._api_model = route.model
+        self._extra_body = dict(route.extra_body or {})  # DeepSeek 需关思考，否则 content 为空
         return self._client
 
     @staticmethod
@@ -95,6 +97,7 @@ class VisionAgent:
                 ],
                 max_tokens=1024,
                 temperature=0.2,
+                extra_body=self._extra_body or None,
             )
             return (resp.choices[0].message.content or "").strip()
         finally:

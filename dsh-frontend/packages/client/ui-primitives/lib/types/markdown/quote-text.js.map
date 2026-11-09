@@ -1,0 +1,1 @@
+{"version":3,"file":"quote-text.js","sourceRoot":"","sources":["../../../src/markdown/quote-text.ts"],"names":[],"mappings":"AAAA,8DAA8D;AAE9D;;;;GAIG;AACH,MAAM,UAAU,eAAe,CAAC,IAAY;IAC1C,OAAO,IAAI,CAAC,OAAO,CAAC,SAAS,EAAE,IAAI,CAAC,CAAC,KAAK,CAAC,IAAI,CAAC,CAAC,GAAG,CAAC,IAAI,CAAC,EAAE,CAAC,KAAK,IAAI,EAAE,CAAC,CAAC,IAAI,CAAC,IAAI,CAAC,CAAA;AACtF,CAAC"}

@@ -24,9 +24,11 @@ class LLMManager:
     def __init__(self, config: Optional[AppConfig] = None):
         self.config = config or get_config_manager().get_config()
         self.main_llm = None       # 智谱主写作模型
+        self.writing_llm = None    # 写作正文独立通道（默认跟随 main）
         self.small_llm = None      # 本地小模型
         self.embeddings = None
         self._init_main_llm()
+        self._init_writing_llm()
         self._init_small_llm()
         self._init_embeddings()
 
@@ -62,11 +64,73 @@ class LLMManager:
             self.main_llm = None
 
     def reinit_main_llm(self):
-        """API key 更新后重新初始化主通道"""
+        """API key / 模型更新后重新初始化主通道（写作通道跟随规则一并刷新）"""
         self._init_main_llm()
+        self._init_writing_llm()
+
+    def reinit_writing_llm(self):
+        """写作通道热切换（设置页改 writing_llm 后调用，无需重启）"""
+        self._init_writing_llm()
 
     def main_llm_available(self) -> bool:
         return self.main_llm is not None
+
+    # ---------- 写作正文独立通道 ----------
+    def _init_writing_llm(self):
+        """分节正文/润色/自查/评分专用通道。
+
+        models.writing_llm 为空 → 按主模型名构建（行为与旧版一致）；
+        显式设置（如 deepseek-4.1-flash）→ 写作独立走该供应商，
+        聊天/大纲/项目理解不受影响。key 缺失时置 None，由
+        get_writing_llm 回退主通道并在此处记录警告。
+        """
+        name = (getattr(self.config.models, "writing_llm", "") or "").strip()
+        follows_main = not name
+        route = resolve_model(name or self.config.models.llm, self.config)
+        self._writing_route = route
+        self._writing_follows_main = follows_main
+        if not route.api_key:
+            self.writing_llm = None
+            if not follows_main:
+                logger.warning(
+                    f"写作通道已选 {route.label}（{name}），但 {route.key_env} 未配置，"
+                    "写作将回退主通道。请在设置页填写 API Key")
+            return
+        try:
+            kwargs = dict(
+                model=route.model,
+                api_key=route.api_key,
+                base_url=route.base_url,
+                temperature=self.config.models.temperature,
+                max_tokens=self.config.models.max_tokens,
+                timeout=route.timeout,
+                streaming=True,
+            )
+            if route.extra_body:
+                kwargs["extra_body"] = route.extra_body
+            self.writing_llm = ChatOpenAI(**kwargs)
+            attach_llm_observer(self.writing_llm, "writing")
+            src = "跟随主模型" if follows_main else f"独立通道: {name}"
+            logger.info(f"写作通道初始化成功（{src}）→ {route.label} {route.model}")
+        except Exception as e:
+            logger.error(f"写作通道初始化失败，回退主通道: {e}")
+            self.writing_llm = None
+
+    def get_writing_llm(self):
+        """写作管线专用 LLM；写作通道不可用时回退主通道（保持写作永远可用）"""
+        if self.writing_llm is not None:
+            return self.writing_llm
+        return self.get_main_llm()
+
+    def writing_provider_label(self) -> str:
+        """当前写作实际使用的供应商标签（诊断/前端展示用）"""
+        route = getattr(self, "_writing_route", None)
+        if route is None:
+            return ""
+        if self.writing_llm is None:
+            main = getattr(self, "_main_route", None)
+            return f"{main.label}（回退）" if main else ""
+        return route.label
 
     # ---------- 辅助通道：本地 Ollama ----------
     def _init_small_llm(self):
@@ -113,7 +177,7 @@ class LLMManager:
         if self.main_llm is None:
             route = getattr(self, "_main_route", None)
             env = route.key_env if route else "ZHIPU_API_KEY"
-            raise RuntimeError(f"主写作模型未初始化：请配置 {env} 并重启服务")
+            raise RuntimeError(f"主写作模型未初始化：请在设置页填写 {env} 并保存（即时生效）")
         return self.main_llm
 
     def get_small_llm(self):
@@ -128,11 +192,18 @@ class LLMManager:
 
     def get_model_info(self) -> Dict[str, Any]:
         route = getattr(self, "_main_route", None)
+        wroute = getattr(self, "_writing_route", None)
+        w_follows = getattr(self, "_writing_follows_main", True)
         return {
             "provider": route.provider if route else self.config.models.provider,
             "provider_label": route.label if route else "",
             "api_model": route.model if route else self.config.models.llm,
             "main_llm": self.config.models.llm,
+            "writing_llm": getattr(self.config.models, "writing_llm", ""),
+            "writing_follows_main": w_follows,
+            "writing_provider_label": self.writing_provider_label(),
+            "writing_api_model": (wroute.model if (wroute and not w_follows) else (route.model if route else "")),
+            "writing_llm_available": self.writing_llm is not None,
             "analyst_llm": getattr(self.config.models, "analyst_llm", ""),
             "vision_llm": getattr(getattr(self.config, "vision", None), "model", ""),
             "main_llm_available": self.main_llm is not None,

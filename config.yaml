@@ -1,6 +1,49 @@
+auth_store:
+  mysql_database: moji
+  mysql_host: 127.0.0.1
+  mysql_password: '192969'
+  mysql_port: 3306
+  mysql_user: root
+  redis_url: redis://127.0.0.1:6379/0
+  seed_admin: admin
+  seed_admin_password: admin123456
+  seed_user: demo_user
+  seed_user_password: demo123456
+  session_ttl_seconds: 604800
+context:
+  budgets:
+    attachments: 6000
+    file_drops: 16000
+    folders: 1500
+    knowledge: 1500
+    project_body: 3000
+    selections: 6000
+    vision: 3000
+  compact_threshold_ratio: 0.8
+  compaction:
+    enabled: true
+    keep_recent_messages: 12
+    min_history_tokens: 4000
+    min_interval_seconds: 60.0
+    old_message_cap_tokens: 300
+    persist_shadow: true
+    retry: 1
+    summary_max_chars: 1400
+    timeout_seconds: 90.0
+  context_window: 128000
+  dry_run: false
+  enabled: true
+  headroom_tokens: 8192
+  history_budget_tokens: 6000
+  model_windows: {}
+  reserve_output_tokens: 16384
+  spill:
+    enabled: true
+    max_files: 2000
+    max_total_mb: 2048
 conversation:
   enable_auto_summary: true
-  max_messages: 50
+  max_messages: 120
   summary_interval: 5
   summary_min_messages: 8
 deepseek:
@@ -31,13 +74,14 @@ logging:
   llm_calls: true
   rotate_mb: 10
 models:
-  analyst_llm: deepseek-4.1-flash
+  analyst_llm: glm-5.3
   embedding: bge-m3
   llm: deepseek-4.1-flash
   max_tokens: 16384
   provider: zhipu
   small_llm: qwen3:4b-instruct
   temperature: 0.4
+  writing_llm: ''
 ollama:
   base_url: http://localhost:11434
   timeout: 20

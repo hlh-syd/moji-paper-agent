@@ -44,6 +44,8 @@ def save_state(state: Dict[str, Any]) -> str:
             msgs = s.get("messages", [])
             s["messages"] = msgs[-20:]
         text = json.dumps(trimmed, ensure_ascii=False, indent=1)
-    sf.write_text(text, encoding="utf-8")
+    # 原子写：前端 800ms 防抖保存 + 并发标签页，崩溃/中断不会留下半截 JSON
+    from src.atomic_io import write_text_atomic
+    write_text_atomic(sf, text)
     logger.info(f"工作区状态已保存（{len(text) // 1024}KB）")
-    return str(STATE_FILE)
+    return str(sf)

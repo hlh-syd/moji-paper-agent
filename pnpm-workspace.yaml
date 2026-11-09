@@ -1,0 +1,9 @@
+packages:
+  - frontend
+  - dsh-frontend/packages/client/ui-primitives
+  - dsh-frontend/packages/client/ui-theme
+  - dsh-frontend/packages/client/store
+  - dsh-frontend/packages/util/code-language
+  - dsh-frontend/packages/util/workspace-path
+allowBuilds:
+  esbuild: set this to true or false

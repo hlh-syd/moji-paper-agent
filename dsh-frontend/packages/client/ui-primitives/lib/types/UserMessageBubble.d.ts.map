@@ -1,0 +1,1 @@
+{"version":3,"file":"UserMessageBubble.d.ts","sourceRoot":"","sources":["../../src/UserMessageBubble.tsx"],"names":[],"mappings":"AAAA,qEAAqE;AACrE,OAAO,KAAK,EAAE,wBAAwB,EAAE,MAAM,OAAO,CAAA;AAIrD,+DAA+D;AAC/D,MAAM,MAAM,sBAAsB,GAAG,wBAAwB,CAAC,KAAK,CAAC,CAAA;AAEpE;;;;GAIG;AACH,wBAAgB,iBAAiB,CAAC,EAAE,SAAS,EAAE,GAAG,KAAK,EAAE,EAAE,sBAAsB,+BAEhF"}

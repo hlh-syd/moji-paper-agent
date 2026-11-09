@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>墨记 · 论文智能体</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // DSH 反闪屏主题启动：默认暗色；localStorage 供首帧，真源为 workspace state
+      try {
+        var t = localStorage.getItem('moji_theme')
+        document.documentElement.style.colorScheme = t === 'light' ? 'light' : 'dark'
+      } catch (e) { document.documentElement.style.colorScheme = 'dark' }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

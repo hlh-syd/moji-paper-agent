@@ -57,3 +57,11 @@ desktop.ini
 docs/images/_*
 _patch_screenshot.py
 uploads/
+
+# ===== Node / 前端（pnpm workspace：frontend + dsh-frontend 五包） =====
+node_modules/
+frontend/dist/
+# DSH 演示站构建产物（只用其 packages/*/lib，不跑 apps/web）
+dsh-frontend/apps/web/dist/
+# 第三方参考仓库（本地资料，不入库）
+deepseek-harness-master/

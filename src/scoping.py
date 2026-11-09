@@ -67,6 +67,16 @@ def uploads_dir() -> Path:
     return _scoped(BASE_DIR / "uploads", current_owner())
 
 
+def context_dir() -> Path:
+    """压缩摘要侧车（每会话一个 json，随内容指纹失效）"""
+    return _scoped(BASE_DIR / "workspace" / "context", current_owner())
+
+
+def spill_dir() -> Path:
+    """溢写存档（超长文本全文；内容寻址，可整目录清理）"""
+    return _scoped(BASE_DIR / "workspace" / "spill", current_owner())
+
+
 def user_root_dirs(owner: str) -> dict:
     """指定用户（非当前上下文）的各根目录——鉴权边界/管理接口用"""
     return {

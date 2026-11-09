@@ -11,6 +11,7 @@ Web API 模块（论文写作智能体）
   - 文档查重：/api/doccheck（上传→三引擎检测→9B改写→自动复检→下载）
 """
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -43,8 +44,11 @@ from src.vision_agent import VisionAgent
 from src.rag_anything_engine import RAGAnythingEngine
 from src.project_indexer import IMAGE_EXTS
 from src.conversation_manager import get_conversation_manager
+from src.context import ContextBlock, ContextEngine, SpillStore
+from src.context.compact import summarize_messages
 from src.domain import list_domains, resolve_domain, load_domain_prompt
 from src import auth, scoping, workspace_store
+from src import auth_store
 from src import observability as obs
 from fastapi import Depends
 
@@ -193,9 +197,56 @@ class PaperAgentSystem:
         self.rag_engine = RAGAnythingEngine(self.config)
         self.section_writer.rag_engine = self.rag_engine
         self.conversation_manager = get_conversation_manager(self.config)
+        # 上下文预算引擎：注入块确定性减压 + 溢写存档 + 历史滑窗与压缩子代理
+        _ctx = self.config.context
+        self.spill_store = SpillStore(
+            scoping.spill_dir,          # 按请求 owner 动态解析，多用户天然隔离
+            enabled=bool(_ctx.spill.enabled),
+            max_files=int(_ctx.spill.max_files),
+            max_total_mb=int(_ctx.spill.max_total_mb))
+        self.context_engine = ContextEngine(
+            lambda: get_config_manager().get_config(),   # 设置页改配置后即时生效
+            messages_provider=self.conversation_manager.get_messages,
+            summarize_fn=self._summarize_history,
+            spill_store=self.spill_store,
+            model_name=self.config.models.llm)
         from src.project_analyst import ProjectAnalyst
         self.analyst = ProjectAnalyst(self.llm_manager, self.config)
         logger.info("论文写作智能体初始化完成")
+
+    async def _summarize_history(self, archived_text: str, previous_summary: str):
+        """压缩子代理：独立提示词 + 结构化 JSON 输出。模型不可用时返回 None，
+        由 ContextEngine 自动降级到确定性滑窗，不影响聊天。"""
+        cfg = get_config_manager().get_config()
+        c = cfg.context.compaction
+        llm = self.llm_manager.main_llm
+        if llm is None:
+            logger.info("主模型不可用，跳过历史压缩（改用确定性滑窗）")
+            return None
+        return await summarize_messages(
+            llm, archived_text, previous_summary,
+            max_input_tokens=max(4000, int(cfg.context.context_window * 0.25)),
+            max_chars=int(c.summary_max_chars),
+            timeout=float(c.timeout_seconds),
+            retry=int(c.retry))
+
+    def _needs_history_compaction(self, session_id: str, cfg) -> bool:
+        """历史超预算且尚无影子 → 本轮会真的调用压缩模型（可能数十秒），先提示用户"""
+        try:
+            from src.context.tokens import estimate_messages_tokens
+            if bool(getattr(cfg, "dry_run", False)):
+                return False
+            c = cfg.compaction
+            if not bool(c.enabled):
+                return False
+            msgs = self.conversation_manager.get_messages(session_id)
+            if len(msgs) <= max(2, int(c.keep_recent_messages)):
+                return False
+            if estimate_messages_tokens(msgs) <= int(cfg.history_budget_tokens):
+                return False
+            return not self.context_engine.has_shadow(session_id)
+        except Exception:  # noqa: BLE001
+            return False
 
     # ---------- 项目 ----------
     def get_profile(self, project_name: str) -> dict:
@@ -264,7 +315,22 @@ class PaperAgentSystem:
         """流式聊天：宪法 + 附件 + 知识库检索（LLM 调用带瞬时错误重试）"""
         session_id = scoping.owner_key(session_id)  # 会话按用户隔离
         self.conversation_manager.add_message(session_id, "user", question)
-        history = self.conversation_manager.get_conversation_context(session_id)
+        # 历史投影：预算制（滑动窗口 + 压缩子代理）；失败或开关关闭时回退旧格式化
+        _ctx_cfg = get_config_manager().get_config().context
+        _ctx_model = get_config_manager().get_config().models.llm
+        hist_stats = None
+        if bool(getattr(_ctx_cfg, "enabled", True)):
+            try:
+                if self._needs_history_compaction(session_id, _ctx_cfg):
+                    yield {"type": "status",
+                           "content": "🧠 正在压缩较早的对话历史，请稍候…"}
+                history, hist_stats = await self.context_engine.build_history_block(
+                    session_id, pending_text=question, model=_ctx_model)
+            except Exception as e:  # noqa: BLE001 - 投影失败不影响本轮回答
+                logger.warning(f"历史投影失败，回退旧格式化: {e}")
+                history = self.conversation_manager.get_conversation_context(session_id)
+        else:
+            history = self.conversation_manager.get_conversation_context(session_id)
         attachments_text = self._build_chat_context(attachments)
         kb_text = self._retrieve_kb_for_chat(question)
         ref_rag = await self._retrieve_reference_rag(question)
@@ -307,7 +373,8 @@ class PaperAgentSystem:
             sel_blocks.append(f"【选段 {i}】\n{quoted}")
         drops_text = ""
         for i, d in enumerate((file_drops or [])[:6], 1):
-            content = (d.get("content") or "")[:200000]
+            # 只做内存保护上限；真正的裁剪/留档交给 ContextEngine 按 token 预算处理
+            content = (d.get("content") or "")[:2_000_000]
             if content.strip():
                 drops_text += f"\n【拖入文件 {i}】{d.get('name', 'unnamed')}\n{content}\n"
         folders_text = ""
@@ -347,7 +414,7 @@ class PaperAgentSystem:
         else:
             style = _read_prompt("cn_academic_style.md") or _read_prompt("cn_journal_style.md")
 
-        context_blocks = []
+        blocks: List[ContextBlock] = []
         # 项目研究主体（理解 Agent 产出，权威项目上下文，不向量化直接注入）
         if project_name:
             try:
@@ -355,24 +422,55 @@ class PaperAgentSystem:
             except Exception:
                 body = ""
             if body:
-                context_blocks.append(
+                blocks.append(ContextBlock(
+                    "project_body",
                     "# 研究项目主体（项目理解 Agent 产出，回答本项目问题以此为准；"
-                    "其中的脚本/结果路径为权威标注）\n" + body)
+                    "其中的脚本/结果路径为权威标注）",
+                    body, priority=1))
         if history:
-            context_blocks.append(f"# 对话历史\n{history}")
+            # 历史已按 token 预算投影过：priority=0 不再裁、不丢弃
+            blocks.append(ContextBlock("history", "# 对话历史", history,
+                                       priority=0, prunable=False))
         if attachments_text:
-            context_blocks.append(f"# 注入文件\n{attachments_text}")
+            blocks.append(ContextBlock("attachments", "# 注入文件", attachments_text,
+                                       priority=1))
         if kb_text:
-            context_blocks.append(f"# 知识库参考\n{kb_text}")
+            blocks.append(ContextBlock("knowledge", "# 知识库参考", kb_text,
+                                       priority=2))
         if sel_blocks:
-            context_blocks.append("# 引用的论文选段（用户从论文中划选，随本条消息一次性注入）\n\n" + "\n\n".join(sel_blocks))
+            blocks.append(ContextBlock(
+                "selections",
+                "# 引用的论文选段（用户从论文中划选，随本条消息一次性注入）",
+                "\n\n".join(sel_blocks), priority=1))
         if drops_text:
-            context_blocks.append("# 拖入的文件（随本条消息一次性注入）" + drops_text)
+            blocks.append(ContextBlock(
+                "file_drops", "# 拖入的文件（随本条消息一次性注入）",
+                drops_text, priority=2))
         if folders_text:
-            context_blocks.append("# 引用的文件夹（用户拖入，结构清单如下；可据此讨论文件夹组织，文件内容需用户单独引用）" + folders_text)
+            blocks.append(ContextBlock(
+                "folders",
+                "# 引用的文件夹（用户拖入，结构清单如下；可据此讨论文件夹组织，"
+                "文件内容需用户单独引用）",
+                folders_text, priority=3))
         if vision_text:
-            context_blocks.append("# 图片视觉分析（视觉代理已查看图片，以下为其报告）" + "\n" + vision_text)
-        context = "\n\n".join(context_blocks)
+            blocks.append(ContextBlock(
+                "vision", "# 图片视觉分析（视觉代理已查看图片，以下为其报告）",
+                vision_text, priority=1))
+
+        asm_stats = None
+        try:
+            context, asm_stats = self.context_engine.assemble_blocks(blocks)
+            self.context_engine.record_assemble(session_id, asm_stats)
+            obs.log_span("context.assemble", kind="node",
+                         in_={"session": session_id[:32], "blocks": len(blocks)},
+                         out={"tokens_before": asm_stats.tokens_before,
+                              "tokens_after": asm_stats.tokens_after,
+                              "dropped": asm_stats.dropped,
+                              "pruned": [b.key for b in asm_stats.blocks if b.pruned],
+                              "history": hist_stats.to_dict() if hist_stats else None})
+        except Exception as e:  # noqa: BLE001 - 装配失败回退朴素拼接
+            logger.warning(f"上下文装配失败，回退朴素拼接: {e}")
+            context = "\n\n".join(f"{b.title}\n{b.text}" for b in blocks)
 
         system_prompt = f"{constitution}\n\n# 语言规范\n{style}"
         # ---- 论文操控：当前项目有大纲时，注入动作协议 + 大纲快照（Agent 循环） ----
@@ -400,7 +498,8 @@ class PaperAgentSystem:
             for round_no in range(3):
                 round_actions = []
                 sink: list = []
-                async for piece in self.section_writer._stream_llm(system_prompt, followup_prompt, sink):
+                async for piece in self.section_writer._stream_llm(
+                        system_prompt, followup_prompt, sink, channel="main"):
                     if parser is None:
                         collected.append(piece)
                         yield {"type": "chunk", "content": piece}
@@ -485,12 +584,39 @@ def _download_name(title: str) -> str:
     return clean[:100].rstrip(" .")
 
 
+def _sessions_fingerprint(sessions: Optional[List[dict]]) -> str:
+    """会话列表的内容指纹（每条消息的 role + 全文都参与哈希）
+
+    前端 800ms 防抖保存，内容常与上一次完全相同；指纹一致就没必要清空重建
+    后端会话，否则压缩影子会被反复冲掉。必须覆盖全部消息：用户在界面编辑/
+    删除较早的消息时（条数与末条可能都不变），弱指纹会导致后端上下文过期。
+    60 条 × 数千字的 SHA256 在亚毫秒级，不影响保存节奏。
+    """
+    h = hashlib.sha256()
+    for s in sessions or []:
+        msgs = s.get("messages") or []
+        h.update(str(s.get("id") or "").encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(str(len(msgs)).encode())
+        h.update(b"\x00")
+        for m in msgs:
+            h.update(str(m.get("role") or "").encode("utf-8", "replace"))
+            h.update(b"\x00")
+            h.update(str(m.get("content") or "").encode("utf-8", "replace"))
+            h.update(b"\x01")
+        h.update(b"\x02")
+    return h.hexdigest()
+
+
 def _restore_conversations(system: PaperAgentSystem, sessions: Optional[List[dict]] = None):
     """把持久化的会话消息还原进后端对话管理器（LLM 上下文跨重启保持）。
     会话键统一加 owner 前缀，跨用户不可见"""
     if sessions is None:
         state = workspace_store.load_state()
         sessions = (state or {}).get("sessions", [])
+    fp = _sessions_fingerprint(sessions)
+    if fp and fp == getattr(system, "_conv_restore_fp", None):
+        return  # 内容未变：跳过重建，保住压缩影子与已积累的后端上下文
     try:
         for s in sessions:
             sid = s.get("id")
@@ -498,11 +624,12 @@ def _restore_conversations(system: PaperAgentSystem, sessions: Optional[List[dic
                 continue
             sid = scoping.owner_key(sid)
             system.conversation_manager.clear_conversation(sid)
-            for m in s.get("messages", [])[-40:]:
+            for m in s.get("messages", [])[-60:]:
                 role = m.get("role")
                 content = m.get("content")
                 if role in ("user", "assistant") and content:
                     system.conversation_manager.add_message(sid, role, content)
+        system._conv_restore_fp = fp
     except Exception as e:
         logger.warning(f"恢复会话历史失败（忽略）: {e}")
 
@@ -536,7 +663,24 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(obs.TraceAccessMiddleware)  # 全链路 trace + 访问日志
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+    # 认证存储初始化：MySQL 建库建表 + 种子账号注入 + Redis 会话层自检。
+    # 失败不阻断启动（以 legacy/503 提示），日志给出明确修复指引。
+    try:
+        from src import auth_store, project_store
+        from src.config import get_config_manager
+        auth_store.register_config(get_config_manager().get_config().auth_store)
+        auth_store.init_db()
+        project_store.init_schema()
+    except Exception as e:
+        logging.getLogger(__name__).error(
+            f"认证存储初始化失败（MySQL/Redis 不可达？登录将不可用）: {e}")
+
+    # 前端构建产物：frontend/dist（vite build，DSH 设计体系，见 frontend/ 与 dsh-frontend/）
+    _dist = Path("frontend/dist")
+    app.mount("/assets", StaticFiles(directory=_dist / "assets"), name="assets")
+    if (_dist / "favicon.svg").exists():
+        app.get("/favicon.svg", include_in_schema=False)(
+            lambda: FileResponse(_dist / "favicon.svg", media_type="image/svg+xml"))
 
     # 静态资源禁用启发式缓存：HTML 引用的版本号已按 mtime 动态生成，内容可变时必换 URL；
     # 同 URL 也直接拉新，避免旧标签页刷新后仍命中浏览器缓存的旧样式表
@@ -596,7 +740,7 @@ def create_app() -> FastAPI:
         rev 乐观锁 + 根目录保护：
         - 每次落盘 rev+1；携带旧 rev 的保存（残留的未刷新标签页）直接 409 拒绝，
           防止旧内存状态把新工作区根目录/会话覆盖回去；
-        - workspace_root 只能经 POST /api/workspace/root 变更——PUT 一律保留服务端已存值。
+        - workspace_root 仅供历史状态兼容：PUT 一律保留服务端已存值（设置页已不再提供改根入口）。
         """
         stored = workspace_store.load_state() or {}
         stored_rev = int(stored.get("rev") or 0)
@@ -610,69 +754,11 @@ def create_app() -> FastAPI:
         _restore_conversations(system, sessions)
         return {"ok": True, "saved_to": path, "rev": state["rev"]}
 
-    @app.get("/api/fs/list")
-    async def fs_list(path: str = Query("", description="目录路径；空=盘符列表/用户主目录")):
-        """列出目录下的子目录（工作区文件夹选择器用）。
-        Windows 下 path 为空时返回全部存在的盘符；仅返回可见目录，无权限的目录静默跳过"""
-        import string as _string
-        target = (path or "").strip()
-        if not target:
-            drives = [f"{d}:\\" for d in _string.ascii_uppercase
-                      if Path(f"{d}:\\").exists()]
-            if drives:
-                return {"path": "", "parent": "", "is_root": True,
-                        "dirs": [{"name": f"磁盘 {d}", "path": d} for d in drives]}
-            target = str(Path.home())
-        p = Path(target)
-        if not p.exists() or not p.is_dir():
-            raise HTTPException(status_code=404, detail=f"目录不存在: {target}")
-        dirs = []
-        try:
-            for child in sorted(p.iterdir(), key=lambda c: c.name.lower()):
-                if child.is_dir() and not child.name.startswith((".", "$")):
-                    dirs.append({"name": child.name, "path": str(child)})
-        except PermissionError:
-            dirs = []  # 无权限目录：返回空清单而非报错
-        except OSError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        parent = str(p.parent) if p.parent != p else ""
-        return {"path": str(p), "parent": parent, "is_root": False, "dirs": dirs}
-
-    @app.post("/api/workspace/root")
-    async def workspace_set_root(data: dict = Body(...)):
-        """设置工作区根目录（项目扫描位置），立即生效并持久化"""
-        root = (data.get("root") or "").strip()
-        if not root:
-            raise HTTPException(status_code=400, detail="root 不能为空")
-        from pathlib import Path as _P
-        if not _P(root).exists():
-            raise HTTPException(status_code=404, detail=f"目录不存在: {root}")
-        prev = workspace_store.load_state() or {}  # 当前用户的 state
-        prev["workspace_root"] = root
-        # 全量切换：切根即脱离旧工作区——携带的旧项目与顶层会话一并清空，
-        # 防止页面在后续保存落盘前中断/刷新时又把 A 工作区的项目、大纲、论文带回来
-        prev["active_project"] = None
-        prev["sessions"] = []
-        prev["rev"] = int(prev.get("rev") or 0) + 1  # 切根也推进版本：旧标签随后的保存一律 409
-        workspace_store.save_state(prev)
-        return {"ok": True, "workspace_root": root, "rev": prev["rev"],
-                "candidates": system.indexer.list_projects(root)}
-
     # ---------- 系统 ----------
     @app.get("/", response_class=HTMLResponse)
     async def root():
-        html = Path("templates/index.html").read_text(encoding="utf-8")
-        # 静态资源缓存击穿：版本号按文件 mtime 动态生成（改版即换 URL，浏览器永不残留旧缓存）。
-        # 覆盖全部本地 css/js——此前只换 app.js/styles.css，layout-v18.css 等写死 ?v=NN 的
-        # 文件在个别浏览器缓存策略下会滞留旧样式
-        def _bump(match: re.Match) -> str:
-            path = match.group(2)
-            try:
-                v = int(Path(path.lstrip("/")).stat().st_mtime)
-            except OSError:
-                v = 0
-            return f'{match.group(1)}{path}?v={v}"'
-        html = re.sub(r'((?:src|href)=")(/static/(?:css|js)/[^"?]+)\?v=\d+"', _bump, html)
+        # v5：frontend/（vite 产物，DSH 设计体系）；hash 资源名免缓存击穿
+        html = Path("frontend/dist/index.html").read_text(encoding="utf-8")
         return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/health", response_model=HealthCheck)
@@ -693,6 +779,13 @@ def create_app() -> FastAPI:
         return {"configured": bool(k),
                 "masked": (k[:3] + "…" + k[-4:]) if k and len(k) > 8 else "",
                 "note": "腾讯朱雀 AI 检测（EdgeOne 网关），月免费 50 万 token"}
+
+    def _glm_key_state() -> dict:
+        z = system.config.zhipu
+        k = z.resolve_api_key()
+        return {"configured": bool(k), "masked": _mask_key(k),
+                "api_key_env": z.api_key_env, "base_url": z.base_url,
+                "note": "智谱（GLM）OpenAI 兼容接口：glm-5.3 / glm-5.3-flash 全站默认模型"}
 
     def _deepseek_key_state() -> dict:
         d = system.config.deepseek
@@ -724,7 +817,8 @@ def create_app() -> FastAPI:
         m, v = system.config.models, system.config.vision
         return {
             "models": {
-                "llm": m.llm,                    # 主写作（大纲/正文/自查）
+                "llm": m.llm,                    # 主模型（聊天/大纲/评审，写作留空时跟随）
+                "writing_llm": getattr(m, "writing_llm", ""),  # 写作正文独立通道；空=跟随主模型
                 "analyst_llm": m.analyst_llm,     # 项目理解 Agent
                 "small_llm": m.small_llm,         # 本地小模型（意图路由/改写）
                 "embedding": m.embedding,         # 只读：切换嵌入需重建知识库
@@ -732,9 +826,12 @@ def create_app() -> FastAPI:
                 "max_tokens": m.max_tokens,
             },
             "vision": {"model": v.model, "enabled": v.enabled},
-            "options": {"llm": _MODEL_WHITELIST, "analyst_llm": _MODEL_WHITELIST,
+            "options": {"llm": _MODEL_WHITELIST, "writing_llm": _MODEL_WHITELIST,
+                        "analyst_llm": _MODEL_WHITELIST,
                         "vision": _MODEL_WHITELIST},
+            "writing_provider": system.llm_manager.writing_provider_label(),
             "zhuque": _zhuque_key_state(),
+            "glm": _glm_key_state(),
             "deepseek": _deepseek_key_state(),
         }
 
@@ -745,11 +842,17 @@ def create_app() -> FastAPI:
         updates: Dict[str, Any] = {}
         key_written = False
         m = payload.get("models") or {}
-        md = {k: m[k] for k in ("llm", "analyst_llm", "small_llm", "temperature", "max_tokens")
+        md = {k: m[k] for k in ("llm", "writing_llm", "analyst_llm", "small_llm",
+                                "temperature", "max_tokens")
               if k in m}
+        # writing_llm 允许传空串（=清除独立通道，回到跟随主模型）
         for key in ("llm", "analyst_llm"):
             if md.get(key) and md[key] not in _MODEL_WHITELIST:
                 raise HTTPException(400, f"{key} 仅支持：{'、'.join(_MODEL_WHITELIST)}")
+        if str(md.get("writing_llm", "") or "").strip() and \
+                md["writing_llm"] not in _MODEL_WHITELIST:
+            raise HTTPException(400,
+                                f"writing_llm 仅支持：{'、'.join(_MODEL_WHITELIST)}（留空=跟随主模型）")
         if md:
             updates["models"] = md
         v = payload.get("vision") or {}
@@ -758,57 +861,69 @@ def create_app() -> FastAPI:
             raise HTTPException(400, f"视觉模型仅支持：{'、'.join(_MODEL_WHITELIST)}")
         if vd:
             updates["vision"] = vd
-        # DeepSeek 接口：key 写 .env；地址 / 真实模型 ID 写 config.yaml
+        # 密钥：DeepSeek / GLM（智谱）/ 朱雀 → 各自写 .env（即时热生效）
         ds = payload.get("deepseek") or {}
-        dd: Dict[str, Any] = {}
-        if ds.get("base_url") is not None and str(ds["base_url"]).strip():
-            b = str(ds["base_url"]).strip().rstrip("/")
-            if not (b.startswith("http://") or b.startswith("https://")):
-                raise HTTPException(400, "DeepSeek 接口地址需以 http:// 或 https:// 开头")
-            dd["base_url"] = b
-        if ds.get("model_id") is not None and str(ds["model_id"]).strip():
-            dd["model_id"] = str(ds["model_id"]).strip()
-        if dd:
-            updates["deepseek"] = dd
         dk = ds.get("api_key")
         if dk is not None and str(dk).strip():
             _write_env_key("DEEPSEEK_API_KEY", str(dk).strip())
+            key_written = True
+        gk = (payload.get("glm") or {}).get("api_key") or payload.get("glm_key")
+        if gk is not None and str(gk).strip():
+            _write_env_key("ZHIPU_API_KEY", str(gk).strip())
             key_written = True
         zk = (payload.get("zhuque") or {}).get("api_key") or payload.get("zhuque_key")
         if zk is not None and str(zk).strip():
             _write_env_key("ZHUQUE_API_KEY", str(zk).strip())
             key_written = True
+        def _reload_config_consumers():
+            """key / 配置变更后重建所有「启动时固化实例」的消费方——即改即用"""
+            system.llm_manager.reinit_main_llm()      # 主通道 + 跟随它的写作通道
+            try:
+                system.vision.config = system.config
+                system.vision.reload_config()
+                if getattr(system, "analyst", None) is not None:
+                    system.analyst.config = system.config
+                if getattr(system, "rag_engine", None) is not None:
+                    system.rag_engine.config = system.config
+                # 对话摘要 LLM 在启动时固化实例，key 更新后一并重建
+                cm = getattr(system, "conversation_manager", None)
+                if cm is not None:
+                    cm.reinit_summary_llm()
+            except Exception:
+                pass
+
         if not updates:
             if key_written:
+                # key 变更同样热重载：主/写作客户端启动时固化了旧 key（或 None），
+                # 不重建则要重启服务才能用——「即改即用」要求这里立即 reinit
+                _reload_config_consumers()
                 return {"ok": True, "applied": {"key": "updated"},
-                        "zhuque": _zhuque_key_state(), "deepseek": _deepseek_key_state()}
+                        "zhuque": _zhuque_key_state(), "glm": _glm_key_state(), "deepseek": _deepseek_key_state()}
             raise HTTPException(400, "没有可更新的字段")
         mgr = get_config_manager()
         mgr.update_config(updates)
         # 同步全系统配置引用并热重载：analyst/vision/rag 每次调用时读取 config（换引用即生效），
-        # 主/小模型客户端在初始化时固化（需重初始化）
+        # 主/写作/小模型客户端在初始化时固化（需重初始化）
         system.config = mgr.config
         system.llm_manager.config = mgr.config
-        system.llm_manager.reinit_main_llm()
-        try:
-            system.vision.config = mgr.config
-            system.vision.reload_config()
-            if getattr(system, "analyst", None) is not None:
-                system.analyst.config = mgr.config
-            if getattr(system, "rag_engine", None) is not None:
-                system.rag_engine.config = mgr.config
-        except Exception:
-            pass
+        system.llm_manager.reinit_writing_llm()   # 写作独立通道（显式设置时）
+        _reload_config_consumers()
         # 选用了 DeepSeek 但 key 未填：明确提示，避免静默降级
         warnings = []
-        for label, model in (("主写作模型", mgr.config.models.llm),
-                             ("项目理解模型", getattr(mgr.config.models, "analyst_llm", "")),
-                             ("视觉模型", mgr.config.vision.model)):
+        _m = mgr.config.models
+        for label, model in (
+                ("主模型", _m.llm),
+                ("写作模型", (getattr(_m, "writing_llm", "") or "").strip()),
+                ("项目理解模型", getattr(_m, "analyst_llm", "")),
+                ("视觉模型", mgr.config.vision.model)):
+            if not model:
+                continue    # 写作留空=跟随主模型，主模型那一行已覆盖
             route = resolve_model(model, mgr.config)
             if route.provider == "deepseek" and not route.api_key:
                 warnings.append(f"{label}已选 DeepSeek，但 DEEPSEEK_API_KEY 未配置")
         return {"ok": True, "applied": updates, "warnings": warnings,
-                "zhuque": _zhuque_key_state(), "deepseek": _deepseek_key_state()}
+                "writing_provider": system.llm_manager.writing_provider_label(),
+                "zhuque": _zhuque_key_state(), "glm": _glm_key_state(), "deepseek": _deepseek_key_state()}
 
     # ---------- 认证与用户管理（RBAC） ----------
     @app.get("/api/auth/status")
@@ -835,8 +950,19 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=401, detail=str(e))
 
     @app.post("/api/auth/logout")
-    async def auth_logout():
-        return {"ok": True}  # 无状态令牌：客户端丢弃即登出
+    async def auth_logout(request: Request):
+        # Redis 服务端会话：吊销当前 token（客户端仍会丢弃本地凭证）
+        auth.revoke_token(auth._token_from_request(request))
+        return {"ok": True}
+
+    @app.get("/api/admin/sessions")
+    async def admin_sessions(user: dict = Depends(_admin_dep)):
+        """在线会话统计（Redis）：各用户活跃会话数"""
+        from src import auth_store
+        try:
+            return {"ok": True, **auth_store.session_stats()}
+        except auth_store.AuthStoreError as e:
+            raise HTTPException(status_code=503, detail=str(e))
 
     @app.get("/api/auth/me")
     async def auth_me(request: Request):
@@ -844,6 +970,32 @@ def create_app() -> FastAPI:
         scoping.set_request_owner(user.get("username", ""))
         return {"user": auth.public_view(user) if not user.get("legacy")
                 else {"username": "", "role": "admin", "legacy": True}}
+
+    @app.put("/api/auth/profile")
+    async def auth_update_profile(request: Request, changes: dict = Body(...)):
+        """当前登录用户修改自己的头像（data URL，存 MySQL）"""
+        user = auth.authenticate(request)
+        if user.get("legacy"):
+            raise HTTPException(status_code=400, detail="单用户模式不支持个人资料")
+        try:
+            return {"ok": True, "user": auth.update_profile(
+                user["username"],
+                **{k: v for k, v in changes.items() if k in ("avatar",)})}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.put("/api/auth/username")
+    async def auth_rename_username(request: Request, changes: dict = Body(...)):
+        """当前登录用户改自己的用户名（登录名本身）：级联项目记录/数据目录，
+        全部会话吊销——客户端需重新登录。"""
+        user = auth.authenticate(request)
+        if user.get("legacy"):
+            raise HTTPException(status_code=400, detail="单用户模式无账号，无需改名")
+        try:
+            auth.rename_username(user["username"], str(changes.get("username") or ""))
+            return {"ok": True, "relogin": True}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/api/admin/users")
     async def admin_users(user: dict = Depends(_admin_dep)):
@@ -891,44 +1043,83 @@ def create_app() -> FastAPI:
         return {"domains": list_domains()}
 
     @app.get("/api/projects")
-    async def list_projects(root: Optional[str] = Query(None, description="工作区根目录，不传用当前用户设置")):
-        """扫描工作区，返回候选项目 + 已注册项目（有画像的）。
-        已注册列表只扫 projects/{当前用户}/，多用户互不可见"""
-        if root is None:
-            root = (workspace_store.load_state() or {}).get("workspace_root") or ""
-        candidates = system.indexer.list_projects(root)
-        registered = []
-        projects_dir = scoping.projects_dir()
-        if projects_dir.exists():
-            for p in sorted(projects_dir.glob("*.profile.json")):
-                try:
-                    data = json.loads(p.read_text(encoding="utf-8"))
-                    registered.append({
-                        "name": data.get("project_name"),
-                        "path": data.get("project_path"),
-                        "profile_file": str(p),
-                        "methods_count": len(data.get("methods", [])),
-                        "stages_count": len(data.get("stages", [])),
-                        "has_outline": (projects_dir / p.name.replace(".profile.json", ".outline.json")).exists(),
-                    })
-                except Exception:
-                    continue
-        return {"candidates": candidates, "registered": registered}
+    async def list_projects():
+        """当前用户的已注册项目：MySQL user_projects（权威）+ Redis 缓存。
+        画像/大纲文件存在性作为附加信息合并返回（用于前端展示与按钮状态）。"""
+        from src import project_store
+        owner = scoping.current_owner()
+
+        def _collect():
+            projects_dir = scoping.projects_dir()
+            items = project_store.list_projects(owner)
+            for it in items:
+                base = f"{it['name']}"
+                it["has_profile"] = (projects_dir / f"{base}.profile.json").exists()
+                it["has_outline"] = (projects_dir / f"{base}.outline.json").exists()
+            return items
+
+        try:
+            registered = await asyncio.to_thread(_collect)
+        except auth_store.AuthStoreError as e:
+            raise HTTPException(status_code=503, detail=f"项目存储不可用: {e}")
+        return {"registered": registered}
+
+    @app.post("/api/projects/pick-folder")
+    async def pick_folder():
+        """弹出系统文件夹选择框（Windows 原生对话框，PowerShell 独立进程），
+        返回所选目录绝对路径；取消返回空串。本地单机部署专用能力。"""
+        def _pick() -> str:
+            import subprocess
+            script = (
+                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "$d=New-Object System.Windows.Forms.FolderBrowserDialog;"
+                "$d.Description='选择项目文件夹';"
+                "$d.UseDescriptionForTitle=$true;"
+                "$d.ShowNewFolderButton=$true;"
+                # 不可见置顶 owner：确保对话框出现在最前（无 owner 时可能被主窗口遮住）
+                "$w=New-Object System.Windows.Forms.Form;"
+                "$w.TopMost=$true;$w.ShowInTaskbar=$false;$w.WindowState='Minimized';"
+                "if($d.ShowDialog($w) -eq [System.Windows.Forms.DialogResult]::OK)"
+                "{Write-Output $d.SelectedPath}"
+                "$w.Dispose()"
+            )
+            try:
+                r = subprocess.run(
+                    ["powershell", "-NoProfile", "-STA", "-Command", script],
+                    capture_output=True, text=True, encoding="utf-8", timeout=600)
+                return (r.stdout or "").strip()
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"无法打开文件夹选择框: {e}")
+
+        return {"path": await asyncio.to_thread(_pick)}
 
     @app.post("/api/projects/register")
     async def register_project(req: RegisterProjectRequest):
-        """注册项目并构建画像；domain 显式指定时写入画像（覆盖自动检测）"""
+        """创建项目：构建画像并把「名称 + 目录地址」写入当前用户的 MySQL 记录（含 Redis 缓存）"""
+        from src import project_store
         try:
             profile = system.indexer.build_profile(req.path, req.name, domain=req.domain)
+            project_name = str(profile.get("project_name") or req.name or "").strip()
+            project_path = str(profile.get("project_path") or req.path or "").strip()
+            if not project_name or not project_path:
+                raise ValueError("项目名称与目录地址不能为空")
+            await asyncio.to_thread(project_store.save_project,
+                                    scoping.current_owner(), project_name, project_path)
             obs.log_span("project.register", kind="node",
                          in_={"name": req.name, "path": req.path, "domain": req.domain},
                          out={"detected_domain": profile.get("domain"),
                               "methods": len(profile.get("methods", [])),
                               "figures": len(profile.get("figures", [])),
                               "key_results": len(profile.get("key_results", []))})
-            return {"ok": True, "profile": profile}
+            return {"ok": True, "profile": profile,
+                    "project": {"name": project_name, "path": project_path}}
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
+        except auth_store.AuthStoreError as e:
+            raise HTTPException(status_code=503, detail=f"项目存储不可用: {e}")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             logger.error(f"项目注册失败: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
@@ -958,19 +1149,20 @@ def create_app() -> FastAPI:
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
         figures = profile.get("figures") or []
-        cap = limit or getattr(system.config.vision, "max_profile_images", 24)
+        # 默认一次清完剩余全部（limit 显式传入时才截断）；missing/已有 desc 的跳过
+        cap = limit or len(figures) or 1
         # 优先位图（png/jpg）且按文件主干去重——tiff 重复件与矢量源不占深化名额
         ranked, seen_stem = [], set()
         for f in figures:
-            if f.get("desc"):
-                continue
+            if f.get("desc") or f.get("missing") or f.get("vision_skip"):
+                continue  # 已有描述 / 文件已不存在 / 视觉模型不支持的格式
             stem = Path(f.get("path", "")).stem.lower()
             is_raster = f.get("path", "").lower().endswith((".png", ".jpg", ".jpeg"))
             if is_raster and stem not in seen_stem:
                 seen_stem.add(stem)
                 ranked.append(f)
         for f in figures:
-            if not f.get("desc") and f not in ranked:
+            if not f.get("desc") and not f.get("missing") and not f.get("vision_skip") and f not in ranked:
                 ranked.append(f)
         targets = ranked[:cap]
         if not targets:
@@ -991,16 +1183,47 @@ def create_app() -> FastAPI:
                         "各组件的连接关系；3)图上可见的关键数字（样本量、指标值、P值、百分比、"
                         "参数等，逐个列出）；4)一句话主要结论。共80~150字，直接给描述，"
                         "不要任何前缀或寒暄；看不清的数字写'图中未标注'，禁止编造。")
-            for fig in targets:
-                try:
-                    desc = loop.run_until_complete(
-                        system.vision.analyze(fig["path"], question, fig.get("name", "")))
-                    desc = (desc or "").strip()[:400]
-                    if desc:
-                        fig["desc"] = desc
-                        _enrich_state["done"] += 1
-                except Exception as e:
-                    logger.warning(f"图片分析失败 {fig.get('name')}: {e}")
+
+            async def _analyze_all():
+                sem = asyncio.Semaphore(4)  # 并发视觉分析：4 路同时跑
+
+                async def _one(fig):
+                    async with sem:
+                        # svg/tiff 等视觉模型不收的格式：找同目录同名位图替身，找不到则持久跳过
+                        p = Path(fig["path"])
+                        analyze_path = fig["path"]
+                        if p.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                            twin = next((p.with_suffix(ext) for ext in (".png", ".jpg", ".jpeg")
+                                         if p.with_suffix(ext).exists()), None)
+                            if twin is None:
+                                fig["vision_skip"] = True
+                                logger.info(f"视觉不支持的格式且无位图替身，标记跳过 {fig.get('name')}: {fig.get('path')}")
+                                return
+                            analyze_path = str(twin)
+                        try:
+                            desc = await system.vision.analyze(
+                                analyze_path, question, fig.get("name", ""))
+                            desc = (desc or "").strip()[:400]
+                            if desc:
+                                fig["desc"] = desc
+                                _enrich_state["done"] += 1
+                            else:
+                                _enrich_state["failed"] = _enrich_state.get("failed", 0) + 1
+                                logger.warning(f"视觉模型返回空描述 {fig.get('name')}: {analyze_path}")
+                        except Exception as e:
+                            msg = str(e)
+                            if isinstance(e, FileNotFoundError) or "不存在" in msg:
+                                fig["missing"] = True
+                                logger.info(f"图片文件已不存在，标记跳过 {fig.get('name')}: {fig.get('path')}")
+                            elif "unsupported image" in msg or "unsupported" in msg.lower():
+                                fig["vision_skip"] = True
+                                logger.info(f"视觉模型不支持该图片，标记跳过 {fig.get('name')}: {msg[:120]}")
+                            else:
+                                logger.warning(f"图片分析失败 {fig.get('name')}: {e}")
+
+                await asyncio.gather(*[_one(fig) for fig in targets])
+
+            loop.run_until_complete(_analyze_all())
             loop.close()
             try:
                 # 分析结果合并回画像文件（保留其他字段）
@@ -1008,9 +1231,15 @@ def create_app() -> FastAPI:
                 if pf.exists():
                     merged = json.loads(pf.read_text(encoding="utf-8"))
                     desc_map = {f["path"]: f.get("desc") for f in figures if f.get("desc")}
+                    missing_paths = {f["path"] for f in figures if f.get("missing")}
+                    skip_paths = {f["path"] for f in figures if f.get("vision_skip")}
                     for f in merged.get("figures", []):
                         if f.get("path") in desc_map:
                             f["desc"] = desc_map[f["path"]]
+                        if f.get("path") in missing_paths:
+                            f["missing"] = True
+                        if f.get("path") in skip_paths:
+                            f["vision_skip"] = True
                     merged["vision_enriched_at"] = datetime.now().isoformat(timespec="seconds")
                     pf.write_text(json.dumps(merged, ensure_ascii=False, indent=2),
                                   encoding="utf-8")
@@ -1048,6 +1277,34 @@ def create_app() -> FastAPI:
         system.analyst.submit(system.analyst.analyze(req.name, req.path))
         return {"ok": True, "state": "analyzing"}
 
+    def _understand_progress(st: dict) -> dict:
+        """状态 → (progress 0-100, stage_label)。LLM 调用没有真实百分比，
+        按阶段起点时间渐近逼近（用户看到的进度条持续前进，完成即 100）：
+        analyzing: scan≈8% → llm 15%→90%（渐近，≈2min 到 80%）；
+        finalizing: 10%→95%（渐近，≈1.5min 到 80%）；终态 100%。"""
+        import math
+        from datetime import datetime as _dt
+        state = st.get("state")
+        if state in ("awaiting_answers", "analyzed", "done"):
+            return {"progress": 100, "stage_label": "分析完成"}
+        if state == "failed":
+            return {"progress": 0, "stage_label": "失败"}
+        stage = st.get("stage") or ""
+        try:
+            t0 = _dt.fromisoformat(st.get("stage_at")) if st.get("stage_at") else None
+            elapsed = (datetime.now() - t0).total_seconds() if t0 else 0.0
+        except ValueError:
+            elapsed = 0.0
+        if state == "analyzing":
+            if stage == "scan":
+                return {"progress": 8, "stage_label": "扫描项目文件"}
+            return {"progress": round(15 + 75 * (1 - math.exp(-elapsed / 75))),
+                    "stage_label": "AI 通读分析中"}
+        if state == "finalizing":
+            return {"progress": round(10 + 85 * (1 - math.exp(-elapsed / 60))),
+                    "stage_label": "合成研究项目主体"}
+        return {"progress": 0, "stage_label": ""}
+
     @app.get("/api/project/understand/status")
     async def understand_status(project_name: str = Query(...)):
         st = dict(system.analyst.state(project_name))
@@ -1055,6 +1312,7 @@ def create_app() -> FastAPI:
         st.pop("inventory", None)
         st.pop("analysis", None)
         st.pop("body", None)
+        st.update(_understand_progress(st))
         return st
 
     @app.post("/api/project/understand/answers")
@@ -1088,7 +1346,9 @@ def create_app() -> FastAPI:
     async def get_tree(project_name: str, max_depth: int = 4):
         try:
             profile = system.get_profile(project_name)
-            return system.indexer.file_tree(profile["project_path"], max_depth=max_depth)
+            # 目录树构建是同步磁盘遍历：to_thread 防阻塞事件循环
+            return await asyncio.to_thread(system.indexer.file_tree,
+                                           profile["project_path"], max_depth=max_depth)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
 
@@ -1716,6 +1976,17 @@ def create_app() -> FastAPI:
         doc_id: str
         project_name: str
 
+    class DocApplyPlanRequest(BaseModel):
+        doc_id: str
+        project_name: str
+        strategy: str = Field("all", description="all=命中处全部替换 | first=只换第一处 | unique=仅唯一命中才换")
+
+    class DocApplyCommitRequest(BaseModel):
+        doc_id: str
+        project_name: str
+        plan: dict = Field(default_factory=dict)
+        force: bool = Field(False, description="论文版本已变化时仍强制提交（逐条仍会复校验命中数）")
+
     def _public_doc(doc: dict) -> dict:
         from src import doc_check as _dc
         paras = doc.get("paragraphs") or []
@@ -1729,7 +2000,8 @@ def create_app() -> FastAPI:
                     and not p.lstrip("*").strip().startswith(("#", "|", "```")),
                 } for p in paras],
                 "marks": doc.get("marks", []),
-                "history": doc.get("history", [])[-8:]}
+                "history": doc.get("history", [])[-8:],
+                "apply_receipts": doc.get("apply_receipts", [])[-3:]}  # 兼容：旧前端忽略该字段
 
     @app.post("/api/doccheck/upload")
     async def doccheck_upload(file: UploadFile = File(...)):
@@ -1794,6 +2066,13 @@ def create_app() -> FastAPI:
 
         verify = await asyncio.to_thread(doc_check.verify_against_paper,
                                          doc, paper_text, paper_title)
+        doc_check.append_event(doc["id"], "verify_report", {
+            "project": project_name,
+            "score": (verify or {}).get("score"),
+            "matched": (verify or {}).get("matched_paras"),
+            "total": (verify or {}).get("total_paras"),
+            "paper_title": paper_title,
+        })
         obs.log_span("doccheck.import_report", kind="node",
                      in_={"name": file.filename, "bytes": len(data),
                           "project": project_name},
@@ -1802,57 +2081,133 @@ def create_app() -> FastAPI:
         return {"ok": True, "doc": _public_doc(doc), "verify": verify,
                 "humanize": await asyncio.to_thread(doc_check.humanize_status)}
 
-    @app.post("/api/doccheck/apply-to-paper")
-    async def doccheck_apply_to_paper(req: DocApplyRequest):
-        """把最近一次 9B 改写结果回写到当前任务论文（仅导入报告模式使用；
-        前端已通过核验；逐段按归一化文本定位，定位不到则跳过）"""
+    def _skip_text(receipt: dict) -> str:
+        """把跳过原因翻译成一句可展示的中文"""
+        from collections import Counter
+        labels = {
+            "not_found": "论文中已找不到原文（可能已被修改）",
+            "ambiguous": "多处命中无法确定",
+            "too_many_hits": "命中处过多，已熔断",
+            "changed_since_plan": "预览后论文已变更",
+            "empty_change": "改写记录为空",
+            "too_short": "段落过短",
+            "no_replacement": "替换未生效",
+            "change_missing": "改写记录缺失",
+            "skip": "计划中已标记跳过",
+        }
+        counts = Counter((s or {}).get("reason") or "skip"
+                         for s in receipt.get("skipped") or [])
+        parts = [f"{labels.get(k, k)} {v} 段" for k, v in counts.items()]
+        return "；".join(parts) if parts else "未知原因"
+
+    def _run_apply(req_doc_id: str, req_project: str, strategy: str = "all",
+                   plan: Optional[dict] = None, force: bool = False) -> dict:
+        """plan（可选）→ 复校验 → 提交 → 落盘 → 回执 + 审计事件。"""
+        from src import doc_check
+        try:
+            doc = doc_check.load_doc(req_doc_id)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        outline = system.outline_generator.load_outline(req_project)
+        if outline is None:
+            raise HTTPException(status_code=404, detail=f"项目尚无大纲: {req_project}")
+        secs = outline.get("sections") or []
+
+        if plan is None:
+            changes = doc_check.latest_changes(doc)
+            if not changes:
+                raise HTTPException(status_code=400,
+                                    detail="该文档还没有可回写的 9B 改写记录")
+            plan = doc_check.plan_apply(doc, secs, changes=changes,
+                                        strategy=strategy)
+        else:
+            if plan.get("doc_id") and plan["doc_id"] != req_doc_id:
+                raise HTTPException(status_code=400, detail="回写计划与文档不匹配")
+            current_rev = doc_check.paper_revision(secs)
+            if (plan.get("paper_rev") and plan["paper_rev"] != current_rev
+                    and not force):
+                raise HTTPException(
+                    status_code=409,
+                    detail="论文在预览之后已变更，请重新生成回写计划")
+
+        plan["project"] = req_project
+        result = doc_check.commit_apply(doc, secs, plan, project=req_project)
+        receipt = result["receipt"]
+        if result["applied"] == 0:
+            doc_check.append_event(req_doc_id, "apply_commit", {
+                "ok": False, "reason": "no_match", "plan_hash": plan.get("plan_hash"),
+                "summary": receipt["summary"]})
+            raise HTTPException(
+                status_code=409,
+                detail=f"改写段落未能在当前论文中定位（{_skip_text(receipt)}）")
+
+        system.outline_generator.save_outline(req_project, outline)
+        doc_check.record_receipt(doc, receipt)
+        doc.setdefault("history", []).append({
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "action": "apply_to_paper", "project": req_project,
+            "applied": result["applied"], "skipped": result["skipped"],
+        })
+        doc_check.save_doc(doc)
+        doc_check.append_event(req_doc_id, "apply_commit", receipt)
+        obs.log_span("doccheck.apply_to_paper", kind="node",
+                     in_={"project": req_project, "doc": req_doc_id,
+                          "strategy": receipt.get("strategy"),
+                          "plan_hash": receipt.get("plan_hash")},
+                     out={"applied": result["applied"],
+                          "skipped": result["skipped"],
+                          "hits": receipt["summary"].get("hits"),
+                          "sections": len(result["sections"])})
+        return {"ok": True, "applied": result["applied"],
+                "skipped": result["skipped"], "sections": result["sections"],
+                "receipt": receipt}
+
+    @app.post("/api/doccheck/apply-plan")
+    async def doccheck_apply_plan(req: DocApplyPlanRequest):
+        """预览回写计划（不写盘）：每条改写命中哪些章节、几处、会跳过什么"""
         from src import doc_check
         try:
             doc = doc_check.load_doc(req.doc_id)
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
-        changes = doc_check.latest_changes(doc)
-        if not changes:
-            raise HTTPException(status_code=400, detail="该文档还没有可回写的 9B 改写记录")
         outline = system.outline_generator.load_outline(req.project_name)
         if outline is None:
-            raise HTTPException(status_code=404, detail=f"项目尚无大纲: {req.project_name}")
-        secs = outline.get("sections") or []
-        applied, skipped, touched = [], [], []
+            raise HTTPException(status_code=404,
+                                detail=f"项目尚无大纲: {req.project_name}")
+        changes = doc_check.latest_changes(doc)
+        if not changes:
+            raise HTTPException(status_code=400,
+                                detail="该文档还没有可回写的 9B 改写记录")
+        plan = doc_check.plan_apply(doc, outline.get("sections") or [],
+                                    changes=changes, strategy=req.strategy)
+        plan["project"] = req.project_name
+        doc_check.append_event(req.doc_id, "apply_plan", {
+            "project": req.project_name, "strategy": plan["strategy"],
+            "plan_hash": plan["plan_hash"], "summary": plan["summary"]})
+        return {"ok": True, "plan": plan}
 
-        for ch in changes:
-            before, after = ch.get("before") or "", ch.get("after") or ""
-            hit = False
-            for sec in secs:
-                content = sec.get("content") or ""
-                new_content, ok = doc_check.replace_in_text(content, before, after)
-                if ok:
-                    sec["content"] = new_content
-                    sec["actual_words"] = count_cn_words(new_content)
-                    if not (sec.get("status") == "drafted"):
-                        sec["status"] = "drafted"
-                    label = sec.get("title") or sec.get("id") or "未命名节"
-                    if label not in touched:
-                        touched.append(label)
-                    hit = True
-                    break
-            (applied if hit else skipped).append(ch.get("idx"))
-        if not applied:
-            raise HTTPException(status_code=409,
-                                detail="改写段落未能在当前论文中定位（论文可能已改动，请重新生成/核验）")
-        system.outline_generator.save_outline(req.project_name, outline)
-        doc.setdefault("history", []).append({
-            "time": datetime.now().isoformat(timespec="seconds"),
-            "action": "apply_to_paper", "project": req.project_name,
-            "applied": len(applied), "skipped": len(skipped),
-        })
-        doc_check.save_doc(doc)
-        obs.log_span("doccheck.apply_to_paper", kind="node",
-                     in_={"project": req.project_name, "doc": req.doc_id},
-                     out={"applied": len(applied), "skipped": len(skipped),
-                          "sections": len(touched)})
-        return {"ok": True, "applied": len(applied), "skipped": len(skipped),
-                "sections": touched}
+    @app.post("/api/doccheck/apply-commit")
+    async def doccheck_apply_commit(req: DocApplyCommitRequest):
+        """按预览计划提交回写：复校验命中数 + 原子写大纲 + 回执落盘"""
+        if not req.plan:
+            raise HTTPException(status_code=400, detail="缺少回写计划（先调用 apply-plan）")
+        return await asyncio.to_thread(
+            _run_apply, req.doc_id, req.project_name, "all", req.plan, req.force)
+
+    @app.post("/api/doccheck/apply-to-paper")
+    async def doccheck_apply_to_paper(req: DocApplyRequest):
+        """把最近一次 9B 改写结果回写到当前任务论文（一次性 plan+commit）。
+        命中处全部替换；命中过多/找不到原文的条目跳过并在回执中说明。"""
+        return await asyncio.to_thread(
+            _run_apply, req.doc_id, req.project_name, "all", None, False)
+
+    @app.get("/api/doccheck/events/{doc_id}")
+    async def doccheck_events(doc_id: str, limit: int = Query(200, ge=1, le=2000)):
+        """审计事件流（导入/改写/回写计划/回写提交），append-only"""
+        from src import doc_check
+        events = await asyncio.to_thread(doc_check.read_events, doc_id, limit)
+        return {"ok": True, "doc_id": doc_id, "events": events,
+                "count": len(events)}
 
     @app.get("/api/doccheck/doc/{doc_id}")
     async def doccheck_get(doc_id: str):
@@ -2227,6 +2582,39 @@ def create_app() -> FastAPI:
     async def conversation_export(session_id: str):
         conv = system.conversation_manager.get_or_create_conversation(scoping.owner_key(session_id))
         return {"session_id": session_id, "conversation": conv.to_dict(), "status": "success"}
+
+    # ---------- 上下文诊断（预算/影子/溢写，便于验证减压是否生效） ----------
+    @app.get("/api/context/stats/{session_id}")
+    async def context_stats(session_id: str):
+        sid = scoping.owner_key(session_id)
+        try:
+            info = system.context_engine.history_stats(
+                sid, model=system.config.models.llm)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"上下文诊断失败: {e}")
+        cfg = get_config_manager().get_config().context
+        info["session_id"] = session_id
+        info["config"] = {
+            "enabled": cfg.enabled,
+            "dry_run": cfg.dry_run,
+            "history_budget_tokens": cfg.history_budget_tokens,
+            "compaction_enabled": cfg.compaction.enabled,
+            "keep_recent_messages": cfg.compaction.keep_recent_messages,
+            "budgets": dict(cfg.budgets),
+        }
+        return {"ok": True, "context": info}
+
+    @app.post("/api/context/compact/{session_id}")
+    async def context_compact(session_id: str):
+        """手动触发一次历史压缩（调试/救急用；正常由聊天自动触发）"""
+        sid = scoping.owner_key(session_id)
+        try:
+            result = await system.context_engine.compact_now(sid)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=f"压缩失败: {e}")
+        obs.log_span("context.compact_manual", kind="node",
+                     in_={"session": session_id[:32]}, out=result)
+        return result
 
     # ---------- WebSocket（轻量：系统信息 + 聊天） ----------
     @app.websocket("/api/ws")

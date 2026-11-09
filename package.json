@@ -1,0 +1,6 @@
+{
+  "name": "moji-root",
+  "private": true,
+  "version": "5.0.0",
+  "description": "墨记·论文写作智能体 根工作区：frontend 应用 + dsh-frontend 设计体系包"
+}

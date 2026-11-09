@@ -159,8 +159,13 @@ class OutlineGenerator:
                     if m.get("name_en"):
                         cache[m["name_en"]] = m["id"]
                 self._name2id_cache = cache
-            except Exception:
+            except FileNotFoundError:
+                # 注册表确实不存在：合法终态，缓存空避免反复读盘
                 self._name2id_cache = {}
+            except Exception as e:
+                # 读取/解析失败（占用、权限、坏 YAML）：不缓存，下次重试
+                logger.warning(f"方法注册表读取失败（本次跳过方法匹配，下次调用重试）: {e}")
+                return []
         return [self._name2id_cache[n.strip()] for n in method_names
                 if n and n.strip() in self._name2id_cache]
 
@@ -665,8 +670,8 @@ class OutlineGenerator:
         pdir.mkdir(parents=True, exist_ok=True)
         safe = re_safe_name(project_name)
         path = pdir / f"{safe}.outline.json"
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(outline, f, ensure_ascii=False, indent=2)
+        from src.atomic_io import write_json_atomic
+        write_json_atomic(path, outline)   # 原子写：崩溃不会留下半截大纲
         return str(path)
 
     def load_outline(self, project_name: str) -> Optional[dict]:

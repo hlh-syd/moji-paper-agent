@@ -3,14 +3,45 @@
 """
 import yaml
 import os
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 
 
+def _load_dotenv() -> None:
+    """把项目根 .env 灌入进程环境变量（不覆盖已有值）。
+
+    resolve_api_key() 只读 os.environ：设置页保存时虽会同步进程 env（即改即用），
+    但服务重启后 .env 若无人加载，GLM/DeepSeek key 会全部"失效"——
+    这里在模块导入时统一补上（等价 python-dotenv，零依赖）。
+    """
+    env = Path(__file__).resolve().parents[1] / ".env"
+    if not env.exists():
+        return
+    for ln in env.read_text(encoding="utf-8", errors="ignore").splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#") or "=" not in ln:
+            continue
+        k, _, v = ln.partition("=")
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        if k and v and k not in os.environ:
+            os.environ[k] = v
+
+
+_load_dotenv()
+
+
 class ModelConfig(BaseModel):
-    """模型配置：主写作通道 + 本地小模型 + 嵌入（统一 GLM-5.3 系列，禁用 4.x/4V）"""
+    """模型配置：主写作通道 + 本地小模型 + 嵌入（统一 GLM-5.3 系列，禁用 4.x/4V）
+
+    writing_llm 为「写作正文独立通道」（分节正文/润色/超写压缩/自查/评分）：
+    留空 = 跟随 llm 主模型（默认，行为与旧版一致）；单独设置后可让写作走
+    DeepSeek 而聊天/大纲/项目理解留在主模型，设置页可热切换。
+    """
     provider: str = "zhipu"
     llm: str = "glm-5.3"
+    writing_llm: str = ""              # 空=跟随 llm；deepseek-4.1-flash=写作独立走 DeepSeek
     analyst_llm: str = "glm-5.3-flash"  # 项目理解 Agent 专属模型（独立于主写作模型）
     small_llm: str = "qwen3:4b-instruct"
     embedding: str = "bge-m3"
@@ -35,8 +66,8 @@ class ZhipuConfig(BaseModel):
 class DeepSeekConfig(BaseModel):
     """DeepSeek OpenAI 兼容 API 配置（写作/项目理解/图片理解可选通道）
 
-    界面选项 deepseek-4.1-flash 只是展示名；真正请求的模型 ID 由 model_id 决定，
-    可在设置页或 config.yaml 中按实际网关修改。
+    界面选项 deepseek-4.1-flash 只是展示名；真正请求的模型 ID 由 model_id 决定
+    （config.yaml 可改，设置页不再暴露接口地址/模型 ID 等高级项）。
     """
     base_url: str = "https://api.deepseek.com"
     api_key_env: str = "DEEPSEEK_API_KEY"
@@ -149,6 +180,21 @@ class OutlineConfig(BaseModel):
     templates: Dict[str, OutlineSectionRatio] = Field(default_factory=dict)
 
 
+class AuthStoreConfig(BaseModel):
+    """认证存储配置：MySQL 用户库（真实账号/角色）+ Redis 会话（服务端令牌，AOF/RDB 持久化）"""
+    mysql_host: str = "127.0.0.1"
+    mysql_port: int = 3306
+    mysql_user: str = "root"
+    mysql_password: str = "192969"
+    mysql_database: str = "moji"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    session_ttl_seconds: int = 7 * 24 * 3600   # 会话有效期（Redis EX）
+    seed_admin: str = "admin"                  # 库表初始化时注入的演示管理员（表空才注入）
+    seed_admin_password: str = "admin123456"
+    seed_user: str = "demo_user"
+    seed_user_password: str = "demo123456"
+
+
 class SystemConfig(BaseModel):
     """系统基本信息"""
     name: str = "墨记 论文智能体"
@@ -183,10 +229,49 @@ class LoggingConfig(BaseModel):
 
 class ConversationConfig(BaseModel):
     """对话相关配置"""
-    max_messages: int = 50
+    max_messages: int = 120          # 条数兜底（真正约束是 context.history_budget_tokens）
     summary_min_messages: int = 8
     summary_interval: int = 5
     enable_auto_summary: bool = True
+
+
+class SpillConfig(BaseModel):
+    """溢写存储配置：超长文本全文落盘，行内只保留头尾"""
+    enabled: bool = True
+    max_files: int = 2000
+    max_total_mb: int = 2048
+
+
+class CompactionConfig(BaseModel):
+    """压缩子代理配置（8 段结构化摘要）"""
+    enabled: bool = True
+    keep_recent_messages: int = 12      # 滑动窗口：最近 N 条原文进上下文
+    old_message_cap_tokens: int = 300   # 未压缩的早期消息每条上限
+    min_history_tokens: int = 4000      # 低于此不触发 LLM 压缩
+    summary_max_chars: int = 1400
+    timeout_seconds: float = 90.0
+    min_interval_seconds: float = 60.0  # 同一会话两次压缩的最小间隔
+    retry: int = 1
+    persist_shadow: bool = True         # 摘要影子落 sidecar，重启后仍有效
+
+
+class ContextConfig(BaseModel):
+    """上下文预算（确定性裁剪 / 溢写 / 压缩的总开关与参数）"""
+    enabled: bool = True
+    dry_run: bool = False               # True=只统计不改写，用于灰度验证
+    context_window: int = 128000        # 主写作模型窗口（token）
+    reserve_output_tokens: int = 16384  # 与 models.max_tokens 对齐
+    headroom_tokens: int = 8192
+    compact_threshold_ratio: float = 0.80
+    history_budget_tokens: int = 6000   # 对话历史投影预算
+    model_windows: Dict[str, int] = Field(default_factory=dict)
+    budgets: Dict[str, int] = Field(default_factory=lambda: {
+        "project_body": 3000, "attachments": 6000, "knowledge": 1500,
+        "selections": 6000, "file_drops": 16000, "folders": 1500,
+        "vision": 3000,
+    })
+    spill: SpillConfig = Field(default_factory=SpillConfig)
+    compaction: CompactionConfig = Field(default_factory=CompactionConfig)
 
 
 class ExportStyleConfig(BaseModel):
@@ -221,7 +306,9 @@ class AppConfig(BaseModel):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
+    context: ContextConfig = Field(default_factory=ContextConfig)
     export_style: ExportStyleConfig = Field(default_factory=ExportStyleConfig)
+    auth_store: AuthStoreConfig = Field(default_factory=AuthStoreConfig)
 
 
 class ConfigManager:
@@ -248,9 +335,11 @@ class ConfigManager:
     def save_config(self, config: Optional[AppConfig] = None):
         if config is None:
             config = self.config
-        with open(self.config_path, 'w', encoding='utf-8') as f:
-            config_dict = config.model_dump()
-            yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True, indent=2)
+        from src.atomic_io import write_text_atomic
+        config_dict = config.model_dump()
+        text = yaml.dump(config_dict, default_flow_style=False, allow_unicode=True, indent=2)
+        # 原子写：保存瞬间崩溃/断电时 config.yaml 要么旧版要么新版，不会半截
+        write_text_atomic(self.config_path, text)
 
     def update_config(self, updates: Dict[str, Any]):
         config_dict = self.config.model_dump()

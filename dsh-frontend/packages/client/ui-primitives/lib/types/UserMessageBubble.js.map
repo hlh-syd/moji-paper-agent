@@ -1,0 +1,1 @@
+{"version":3,"file":"UserMessageBubble.js","sourceRoot":"","sources":["../../src/UserMessageBubble.tsx"],"names":[],"mappings":";AAEA,OAAO,IAAI,MAAM,MAAM,CAAA;AACvB,OAAO,GAAG,MAAM,gCAAgC,CAAA;AAKhD;;;;GAIG;AACH,MAAM,UAAU,iBAAiB,CAAC,EAAE,SAAS,EAAE,GAAG,KAAK,EAA0B;IAC/E,OAAO,iBAAS,KAAK,EAAE,SAAS,EAAE,IAAI,CAAC,GAAG,CAAC,MAAM,EAAE,SAAS,CAAC,GAAI,CAAA;AACnE,CAAC"}

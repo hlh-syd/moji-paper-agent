@@ -16,6 +16,7 @@
 """
 import logging
 import re
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -31,17 +32,22 @@ _cache: dict = {}
 
 _pipelines: dict = {}
 _load_failed = False
+_load_lock = threading.Lock()   # 加载串行化：防并发重复加载模型 + _force_offline 环境篡改互斥
 
 
 def _load(lang: str):
-    """懒加载对应语言的分类 pipeline（线程级单例；失败全局降级）。
-    已缓存模型强制离线加载：部分 huggingface_hub 版本即使 local_files_only=True
-    仍会做联网 etag 校验（断网时 5 轮重试 ≈ 4 分钟，曾把 SSE 复检拖死）；
-    本地加载失败再回退联网（首装下载路径）"""
+    """懒加载对应语言的分类 pipeline（进程级单例；失败全局降级）。
+    全程持 _load_lock：加载期间的 _force_offline 会临时改写进程环境变量与
+    huggingface_hub 常量，锁互斥保证并发加载不互相污染、同一模型不重复加载。
+    已缓存模型强制离线加载：部分 huggingface_hub 版本即使
+    local_files_only=True 仍会做联网 etag 校验（断网时 5 轮重试 ≈ 4 分钟，曾把
+    SSE 复检拖死）；本地加载失败再回退联网（首装下载路径）"""
     global _load_failed
     if _load_failed:
         return None
-    if lang not in _pipelines:
+    with _load_lock:                       # 全程持锁：环境篡改互斥 + 防重复加载
+        if lang in _pipelines:             # 双检：等锁期间可能已被并发加载
+            return _pipelines[lang]
         from transformers import pipeline as hf_pipeline
         try:
             with _force_offline():
@@ -159,10 +165,12 @@ def detect_aigc(text: str) -> Optional[dict]:
     if not text or len(text.strip()) < 200:
         return None
     key = hash(text[:4000]) ^ len(text)
-    if key in _cache:
-        return _cache[key]
+    cached = _cache.get(key)
+    if cached is not None:
+        _cache[key] = _cache.pop(key)      # LRU：命中即移到最新
+        return dict(cached)                # 防御性拷贝：调用方改动不污染缓存
     lang = _lang_of(text)
-    pipe = _load(lang)
+    pipe = _load(lang)                     # 内部持 _load_lock（勿在外层重复加锁）
     if pipe is None:
         return None
     chunks = _chunks(text)
@@ -181,6 +189,6 @@ def detect_aigc(text: str) -> Optional[dict]:
         "model": _MODELS[lang].split("/")[-1],
     }
     if len(_cache) >= _CACHE_MAX:
-        _cache.pop(next(iter(_cache)))
+        _cache.pop(next(iter(_cache)))     # 淘汰最旧（命中重插 ⇒ 真 LRU）
     _cache[key] = result
-    return result
+    return dict(result)

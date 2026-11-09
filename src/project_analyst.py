@@ -74,9 +74,10 @@ class ProjectAnalyst:
         import asyncio
         return asyncio.run_coroutine_threadsafe(_with_ctx(), self._loop)
 
-    def _fresh_llm(self):
+    def _fresh_llm(self, min_max_tokens: int = 0):
         """每次调用新建 LLM 客户端：理解 Agent 跑在自建后台线程/事件循环里，
-        复用共享实例会把绑定在其它 loop 的 httpx 连接池带进来导致挂死"""
+        复用共享实例会把绑定在其它 loop 的 httpx 连接池带进来导致挂死。
+        min_max_tokens：分析输出大（pipeline/脚本清单/结果图），至少给到该上限防截断"""
         try:
             from langchain_openai import ChatOpenAI
             from src.model_registry import resolve_model
@@ -91,7 +92,7 @@ class ProjectAnalyst:
                 api_key=route.api_key,
                 base_url=route.base_url,
                 temperature=cfg.models.temperature,
-                max_tokens=cfg.models.max_tokens,
+                max_tokens=max(cfg.models.max_tokens, min_max_tokens),
                 timeout=route.timeout,
                 streaming=False,
             )
@@ -267,26 +268,45 @@ class ProjectAnalyst:
 # 项目扫描清单
 """
 
+    RETRY_PROMPT = """你上一次的输出无法解析为完整 JSON（疑似被长度截断）。
+请重新输出完整 JSON，结构与要求不变，但必须压缩篇幅：
+- understood ≤ 120 字；pipeline 每阶段 purpose ≤ 25 字、scripts/outputs 各最多 3 条；
+- result_map 只保留最重要的 30 条；key_numbers 只保留候选中有明确口径的条目，其余并入 questions；
+- core_scripts 只保留 importance=core/support 的条目。
+只输出 JSON 本身，确保花括号完整闭合。"""
+
     async def analyze(self, name: str, project_path: str) -> dict:
         """完整分析（扫描 + LLM）；提交到常驻分析线程"""
         try:
-            self._set(name, state="analyzing", started_at=datetime.now().isoformat())
+            self._set(name, state="analyzing", stage="scan",
+                      stage_at=datetime.now().isoformat(),
+                      started_at=datetime.now().isoformat())
             inv = self.scan(project_path)
             inventory = self.render_inventory(inv)
             numbers_block = self._profile_numbers_block(name)
             if numbers_block:
                 inventory += "\n\n" + numbers_block
             from langchain_core.messages import HumanMessage
-            llm = self._fresh_llm()
-            resp = await llm.ainvoke([HumanMessage(content=self.ANALYZE_PROMPT + inventory)])
+            self._set(name, stage="llm", stage_at=datetime.now().isoformat())
+            llm = self._fresh_llm(min_max_tokens=32768)
+            messages = [HumanMessage(content=self.ANALYZE_PROMPT + inventory)]
+            resp = await llm.ainvoke(messages)
             content = resp.content if isinstance(resp.content, str) else str(resp.content)
             data = self._parse_json(content)
             if not data.get("pipeline"):
-                raise ValueError("分析结果缺少 pipeline 字段")
+                # 输出截断/无法解析：带压缩要求重试一次
+                messages.append(HumanMessage(content=content[-2000:] + "\n\n" + self.RETRY_PROMPT))
+                resp = await llm.ainvoke(messages)
+                content2 = resp.content if isinstance(resp.content, str) else str(resp.content)
+                data = self._parse_json(content2)
+            if not data.get("pipeline"):
+                raise ValueError(
+                    f"分析结果缺少 pipeline 字段（模型输出 {len(content)} 字符，"
+                    f"疑似截断；重试后仍失败，尾部：…{content[-160:]!r}）")
             questions = data.get("questions") or []
             self._set(name, state="awaiting_answers" if questions else "analyzed",
                       analysis=data, inventory=inventory,
-                      project_path=project_path,
+                      project_path=project_path, stage="",
                       questions=questions)
             from src.observability import log_span
             log_span("analyst.analyze", kind="node",
@@ -357,7 +377,8 @@ class ProjectAnalyst:
         st = self.state(name)
         if st.get("state") not in ("awaiting_answers", "analyzed", "done"):
             return {"error": f"当前状态 {st.get('state')} 不可合成（需先完成分析）"}
-        self._set(name, state="finalizing")  # 进入合成态（失败会转为 failed）
+        # 进入合成态（失败会转为 failed）；stage 供状态端点合成进度
+        self._set(name, state="finalizing", stage="finalize", stage_at=datetime.now().isoformat())
         try:
             inv_text = st.get("inventory") or ""
             analysis = st.get("analysis") or {}
@@ -396,7 +417,7 @@ class ProjectAnalyst:
             if len(body) < 300:
                 raise ValueError("主体文本过短，疑似生成失败")
             self.save_body(name, body)
-            self._set(name, state="done", body=body,
+            self._set(name, state="done", body=body, stage="", stage_at=None,
                       finalized_at=datetime.now().isoformat())
             return self.state(name)
         except Exception as e:

@@ -55,3 +55,7 @@ pandas>=2.2
 
 # API Documentation extras
 pygments>=2.17
+
+# 认证存储（真实登录/权限）：MySQL 用户库 + Redis 会话
+pymysql>=1.1
+redis>=5.0

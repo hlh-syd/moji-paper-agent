@@ -9,6 +9,8 @@ _THINK_OPEN = '<think>'
 _THINK_CLOSE = '</think>'
 # 匹配完整的 <think>...</think> 块
 _THINK_PATTERN = re.compile(re.escape(_THINK_OPEN) + r'.*?' + re.escape(_THINK_CLOSE), re.DOTALL)
+_CJK_COUNT_RE = re.compile(r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]")
+_ASCII_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:[-.'/][A-Za-z0-9]+)*")
 
 
 def strip_think_blocks(text: Optional[str]) -> str:
@@ -39,6 +41,17 @@ def strip_think_blocks(text: Optional[str]) -> str:
         text = text[:open_idx]
 
     return text.strip()
+
+
+def count_cn_words(text: str) -> int:
+    """中文字数统计：CJK字符 + 标点 + ASCII词，近似 Word 字数
+
+    放在 text_utils 而不是 section_writer：回写/导出等纯文本场景也要用，
+    而 section_writer 依赖较重。section_writer 仍原样再导出该函数。
+    """
+    cjk = len(_CJK_COUNT_RE.findall(text or ""))
+    ascii_words = len(_ASCII_WORD_RE.findall(text or ""))
+    return cjk + ascii_words
 
 
 class ThinkStreamFilter:

@@ -1,0 +1,1 @@
+{"version":3,"file":"keyboard-composition.d.ts","sourceRoot":"","sources":["../../src/keyboard-composition.ts"],"names":[],"mappings":"AAAA,0FAA0F;AAE1F;;;;GAIG;AACH,wBAAgB,kBAAkB,CAAC,QAAQ,EAAE,QAAQ,GAAG;IACtD,MAAM,CAAC,KAAK,EAAE,aAAa,GAAG,OAAO,CAAA;IACrC,OAAO,IAAI,IAAI,CAAA;CAChB,CAyBA"}

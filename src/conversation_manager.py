@@ -123,6 +123,10 @@ class ConversationHistory:
         """
         return self.messages[-count:] if self.messages else []
 
+    def snapshot_messages(self) -> List[ConversationMessage]:
+        """当前全部消息的浅拷贝（上下文投影用；调用方不得原地修改列表结构）"""
+        return list(self.messages)
+
     def get_formatted_history(self, include_summary: bool = True) -> str:
         """
         获取格式化的对话历史文本
@@ -228,6 +232,23 @@ class ConversationManager:
         except Exception as e:
             logger.error(f"对话摘要LLM初始化失败: {e}")
             self.summary_llm = None
+
+    def reinit_summary_llm(self):
+        """API key 变更后热重建摘要 LLM（启动时固化的实例不会自动感知新 key）"""
+        self._initialize_llm()
+
+    def rename_owner_prefix(self, old: str, new: str) -> int:
+        """用户改名：把内存对话键 owner 前缀 old:: → new::（不迁移则改名后
+        对话上下文全部失联，要等前端整份工作区重新保存才恢复）"""
+        if not old or not new or old == new:
+            return 0
+        oldp, moved = f"{old}::", 0
+        for key in [k for k in self.conversations if k.startswith(oldp)]:
+            self.conversations[key[len(oldp):] and f"{new}::{key[len(oldp):]}"] = self.conversations.pop(key)
+            moved += 1
+        if moved:
+            logger.info(f"用户改名 {old} → {new}：已迁移 {moved} 个对话上下文")
+        return moved
 
     def get_or_create_conversation(self, session_id: str) -> ConversationHistory:
         """获取或创建对话历史"""
@@ -407,6 +428,11 @@ class ConversationManager:
         """
         conversation = self.get_or_create_conversation(session_id)
         return conversation.get_formatted_history()
+
+    def get_messages(self, session_id: str) -> List[ConversationMessage]:
+        """指定会话的完整消息快照（ContextEngine 的历史投影数据源）"""
+        conversation = self.get_or_create_conversation(session_id)
+        return conversation.snapshot_messages()
 
     def clear_conversation(self, session_id: str):
         """清空对话历史"""

@@ -57,8 +57,10 @@ class SectionWriter:
                 base = Path(__file__).parent / "prompts" / "section_briefs.json"
                 try:
                     self._briefs_cache[dom.key] = json.loads(base.read_text(encoding="utf-8"))
-                except Exception:
-                    self._briefs_cache[dom.key] = {}
+                except Exception as e:
+                    # 基础简报也读不了（目录异常/坏 JSON）：不缓存，下次调用重试
+                    logger.warning(f"分节写作简报读取失败（本次空简报，下次重试）: {e}")
+                    return {}
         return self._briefs_cache[dom.key]
 
     # ---------- 上下文构建 ----------
@@ -605,12 +607,17 @@ class SectionWriter:
         return best
 
     async def _stream_llm(self, system_prompt: str, user_prompt: str, sink: list,
-                          restart_marker: bool = False):
-        """流式调用主模型；瞬时错误自动重试（最多3次）。
+                          restart_marker: bool = False, channel: str = "writing"):
+        """流式调用模型；瞬时错误自动重试（最多3次）。
+
+        channel="writing"（默认）：写作管线（正文/润色/超写压缩/自查/评分）——
+        走可独立切换的写作通道（models.writing_llm，空=跟随主模型）；
+        channel="main"：聊天等非写作调用显式指定，保持主模型不变。
         restart_marker=True（章节主生成）：重试改为静默完整重生成，
         若模型从头重写则发 RESTART 标记让消费方重置本段——彻底杜绝续写乱序/交叠。"""
         from langchain_core.messages import HumanMessage, SystemMessage
-        llm = self.llm_manager.get_main_llm()
+        llm = (self.llm_manager.get_writing_llm() if channel == "writing"
+               else self.llm_manager.get_main_llm())
         delay = 2
         attempt = 0
         while attempt < 3:
@@ -811,7 +818,7 @@ class SectionWriter:
         else:
             units = [{"heading": None, "node": None, "title": None, "target": target}]
 
-        self.llm_manager.get_main_llm()  # 前置校验：主模型未配置时快速失败
+        self.llm_manager.get_writing_llm()  # 前置校验：写作通道未配置时快速失败
 
         beats = section.get("beats") or []
         # 修2/修3：小节级图表分配（含章内连续编号起点）；修4：单元级数字守卫的事实基准
@@ -1221,7 +1228,7 @@ class SectionWriter:
             addendum = self._load_prompt(dom.review_addendum)
             if addendum:
                 checklist = checklist + "\n\n" + addendum
-        llm = self.llm_manager.get_main_llm()
+        llm = self.llm_manager.get_writing_llm()
         report_parts = []
         totals = {"通过": 0, "警告": 0, "不通过": 0}
         for sec in outline.get("sections", []):
@@ -1303,7 +1310,7 @@ class SectionWriter:
         """审稿评分表：每候选打分（总体/数据真实性/逻辑性/写作规范 + weaknesses）"""
         from langchain_core.messages import HumanMessage
         dom = self._dom(profile or {})
-        llm = self.llm_manager.get_main_llm()
+        llm = self.llm_manager.get_writing_llm()
         out = {}
         for c in candidates:
             prompt = f"""你是{dom.reviewer}。对下面这份「{section_id}」章节候选稿打分。
@@ -2653,8 +2660,6 @@ class SectionWriter:
 
 
 def count_cn_words(text: str) -> int:
-    """中文字数统计：CJK字符 + 标点 + ASCII词，近似 Word 字数"""
-    import re
-    cjk = len(re.findall(r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]", text))
-    ascii_words = len(re.findall(r"[A-Za-z0-9]+(?:[-.'/][A-Za-z0-9]+)*", text))
-    return cjk + ascii_words
+    """中文字数统计（实现见 text_utils；此处再导出以兼容既有导入方）"""
+    from src.text_utils import count_cn_words as _impl
+    return _impl(text)

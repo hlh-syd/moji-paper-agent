@@ -14,17 +14,21 @@
   - 朱雀无 Key / BERT 模型缺失 / Ollama 不在线均优雅降级（字段置 None + 提示）
   - 改写只动选中段落，未选中段落原样保留（改写失败也保留原文）
 """
+import hashlib
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from src import scoping
+from src.atomic_io import write_text_atomic
+from src.text_utils import count_cn_words
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,8 @@ MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_PARAS = 300              # 超长文档截断保护（检测/展示时延控制）
 _MIN_REWRITE_CHARS = 100     # 与 local_humanize.rewrite 下限一致
 _PARA_MODEL_CAP = 80         # 段落级 BERT 检测上限（纯 CPU，逐段推理慢）
+_MAX_APPLY_HITS = 50         # 单段改写回写命中数上限（防一句套话污染全文）
+_EVENT_FILE_MAX_BYTES = 5 * 1024 * 1024
 
 _DOC_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{6,64}$")
 
@@ -72,7 +78,7 @@ def load_doc(doc_id: str) -> dict:
 
 def save_doc(doc: dict) -> Path:
     p = _doc_path(doc["id"])
-    p.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
+    write_text_atomic(p, json.dumps(doc, ensure_ascii=False, indent=1))
     return p
 
 
@@ -264,6 +270,11 @@ def create_report_doc(data: bytes, filename: str, token: str, paper_text: str = 
         "history": [],
     }
     save_doc(doc)
+    append_event(doc_id, "import_report", {
+        "filename": filename, "ext": ext,
+        "paras": len(doc["paragraphs"]), "marks": len(marks),
+        "paper_aligned": bool(paper_text),
+    })
     return doc
 
 
@@ -599,6 +610,328 @@ def latest_changes(doc: dict) -> List[dict]:
     return []
 
 
+# ---------- 审计事件流（append-only；doc.json 仍是读模型） ----------
+# 对应 harness「日志是事实源、视图是投影」：任何一次检测/改写/回写都能追溯，
+# 但业务读取仍然只读 {doc_id}.json，不需要重放事件。
+
+_EVENT_LOCK = threading.Lock()
+
+
+def _events_path(doc_id: str) -> Path:
+    return _doc_dir() / f"{doc_id}.events.jsonl"
+
+
+def _last_seq(path: Path) -> int:
+    try:
+        with path.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8192))
+            tail = f.read().decode("utf-8", "ignore").strip().splitlines()
+        if tail:
+            return int(json.loads(tail[-1]).get("seq") or 0)
+    except (OSError, ValueError, TypeError):
+        pass
+    return 0
+
+
+def append_event(doc_id: str, event_type: str,
+                 payload: Optional[dict] = None) -> None:
+    """追加一条审计事件；失败只记 warning，绝不影响主流程"""
+    if not doc_id or not _DOC_ID_RE.match(str(doc_id)):
+        return
+    try:
+        path = _events_path(doc_id)
+        with _EVENT_LOCK:
+            if path.exists() and path.stat().st_size > _EVENT_FILE_MAX_BYTES:
+                try:
+                    path.replace(path.with_suffix(".1.jsonl"))
+                except OSError:
+                    pass
+            seq = _last_seq(path) + 1 if path.exists() else 1
+            line = json.dumps({
+                "seq": seq,
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "type": event_type,
+                "payload": payload or {},
+            }, ensure_ascii=False)
+            with path.open("a", encoding="utf-8", newline="\n") as f:
+                f.write(line + "\n")
+    except Exception as e:  # noqa: BLE001 - 审计失败不得影响业务
+        logger.warning("审计事件写入失败（忽略）: %s", e)
+
+
+def read_events(doc_id: str, limit: int = 200) -> List[dict]:
+    """读取最近 limit 条事件（文件很大时只回读尾部）"""
+    if not doc_id or not _DOC_ID_RE.match(str(doc_id)):
+        return []
+    path = _events_path(doc_id)
+    if not path.exists():
+        return []
+    try:
+        from collections import deque
+        with path.open("r", encoding="utf-8") as f:
+            lines = deque(f, maxlen=max(1, int(limit)))
+        out = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+        return out
+    except OSError as e:
+        logger.info("审计事件读取失败 %s: %s", doc_id, e)
+        return []
+
+
+# ---------- 回写：全量替换 + 两阶段提交 ----------
+
+_PUNCT_OPEN = "“\"'‘（(【[《<「『"
+_PUNCT_CLOSE = "”\"'’）)】]》>」』。，、；：！？.,;:!?…—-"
+
+
+def count_in_text(content: str, before: str,
+                  *, limit: int = _MAX_APPLY_HITS + 1) -> int:
+    """改写前段落在正文中的命中次数（归一化匹配，最多数到 limit）"""
+    return len(find_spans(content, before, max_hits=limit))
+
+
+def find_spans(content: str, before: str,
+               *, max_hits: int = _MAX_APPLY_HITS) -> List[Tuple[int, int]]:
+    """返回全部非重叠命中的原文区间 [(start, end), ...]（从左到右）
+
+    与 replace_in_text 同源：只比较中英文/数字，忽略标点与空白；替换范围
+    吸收段首开引号与段尾标点，避免残留「。。」「“ ”」。
+    """
+    nb, _ = _norm_with_map(before)
+    if len(nb) < 20 or not content:
+        return []
+    nc, cmap = _norm_with_map(content)
+    spans: List[Tuple[int, int]] = []
+    pos = 0
+    limit = max(1, int(max_hits))
+    while len(spans) < limit:
+        hit = nc.find(nb, pos)
+        if hit < 0:
+            break
+        start = cmap[hit]
+        end = cmap[hit + len(nb) - 1] + 1
+        while (start > 0 and content[start - 1] not in "\n"
+               and content[start - 1] in _PUNCT_OPEN + " \t"):
+            start -= 1
+        while (end < len(content) and content[end] not in "\n"
+               and content[end] in _PUNCT_CLOSE + " \t"):
+            end += 1
+        if spans and start < spans[-1][1]:
+            spans[-1] = (spans[-1][0], max(spans[-1][1], end))
+        else:
+            spans.append((start, end))
+        pos = hit + len(nb)
+    return spans
+
+
+def replace_all_in_text(content: str, before: str, after: str,
+                        *, max_hits: int = _MAX_APPLY_HITS) -> Tuple[str, int]:
+    """把所有命中处替换为 after，返回 (新文本, 替换处数)。
+
+    命中数超过 max_hits 时视为异常（一句通用套话），原样返回且计数为 -1。
+    """
+    spans = find_spans(content, before, max_hits=max_hits + 1)
+    if not spans:
+        return content, 0
+    if len(spans) > max_hits:
+        return content, -1
+    out = content
+    for start, end in reversed(spans):   # 从右往左换，避免下标位移
+        out = out[:start] + after + out[end:]
+    return out, len(spans)
+
+
+def paper_revision(sections: List[dict]) -> str:
+    """论文正文版本指纹（id + 内容）；用于计划/提交之间检测漂移"""
+    h = hashlib.sha256()
+    for sec in sections or []:
+        h.update(str(sec.get("id") or "").encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(str(sec.get("content") or "").encode("utf-8", "replace"))
+        h.update(b"\x01")
+    return h.hexdigest()[:16]
+
+
+def _section_key(sec: dict) -> str:
+    return str(sec.get("id") or sec.get("title") or "")
+
+
+def plan_apply(doc: dict, sections: List[dict], *,
+               changes: Optional[List[dict]] = None,
+               strategy: str = "all",
+               max_hits: int = _MAX_APPLY_HITS) -> dict:
+    """计算回写计划（纯计算，不写盘）。strategy: all | first | unique"""
+    changes = latest_changes(doc) if changes is None else changes
+    strategy = (strategy or "all").strip().lower()
+    if strategy not in ("all", "first", "unique"):
+        strategy = "all"
+    ops: List[dict] = []
+    for ch in changes:
+        idx = ch.get("idx")
+        before = ch.get("before") or ""
+        after = ch.get("after") or ""
+        op = {"idx": idx, "before_chars": len(before), "after_chars": len(after),
+              "strategy": strategy, "targets": [], "expected_total": 0}
+        if not before.strip() or not after.strip():
+            op.update(action="skip", reason="empty_change")
+            ops.append(op)
+            continue
+        if len(_norm_with_map(before)[0]) < 20:
+            op.update(action="skip", reason="too_short")
+            ops.append(op)
+            continue
+        targets = []
+        for sec in sections:
+            n = count_in_text(sec.get("content") or "", before,
+                              limit=max_hits + 1)
+            if n:
+                targets.append({"section_id": _section_key(sec), "count": n})
+        total = sum(t["count"] for t in targets)
+        op["expected_total"] = total
+        if total == 0:
+            op.update(action="skip", reason="not_found",
+                      targets=[])
+        elif total > max_hits:
+            op.update(action="skip", reason="too_many_hits", targets=targets)
+        elif strategy == "unique" and total > 1:
+            op.update(action="skip", reason="ambiguous", targets=targets)
+        elif strategy == "first":
+            first = targets[0]
+            op.update(action="apply",
+                      targets=[{"section_id": first["section_id"], "count": 1}])
+        else:
+            op.update(action="apply", targets=targets)
+        ops.append(op)
+
+    applicable = [o for o in ops if o["action"] == "apply"]
+    plan = {
+        "doc_id": doc.get("id"),
+        "project": doc.get("project"),
+        "strategy": strategy,
+        "paper_rev": paper_revision(sections),
+        "max_hits": max_hits,
+        "ops": ops,
+        "summary": {
+            "total": len(ops),
+            "applicable": len(applicable),
+            "skipped": len(ops) - len(applicable),
+            "total_hits": sum(o["expected_total"] for o in applicable),
+        },
+    }
+    canonical = json.dumps(
+        {"paper_rev": plan["paper_rev"], "strategy": strategy,
+         "ops": [{k: o.get(k) for k in ("idx", "action", "expected_total", "targets")}
+                 for o in ops]},
+        sort_keys=True, ensure_ascii=False)
+    plan["plan_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return plan
+
+
+def commit_apply(doc: dict, sections: List[dict], plan: dict, *,
+                 project: str = "",
+                 max_hits: int = _MAX_APPLY_HITS) -> dict:
+    """执行回写计划（不落盘；调用方负责保存大纲与 doc）。
+
+    提交前重新统计每条改写的命中数，与计划不一致（论文被别处改过）则该条跳过，
+    对应 harness「两阶段提交」的复校验。
+    """
+    by_key = {_section_key(s): s for s in sections}
+    changes_by_idx = {}
+    for c in (latest_changes(doc) or []):
+        changes_by_idx.setdefault(c.get("idx"), c)
+    rev_before = paper_revision(sections)
+    applied, skipped, touched = [], [], []
+    total_hits = 0
+
+    for op in plan.get("ops") or []:
+        idx = op.get("idx")
+        if op.get("action") != "apply":
+            skipped.append({"idx": idx, "reason": op.get("reason") or "skip"})
+            continue
+        change = changes_by_idx.get(idx)
+        if change is None:
+            skipped.append({"idx": idx, "reason": "change_missing"})
+            continue
+        before, after = change.get("before") or "", change.get("after") or ""
+        now_total = sum(count_in_text(s.get("content") or "", before,
+                                      limit=max_hits + 1) for s in sections)
+        if now_total != int(op.get("expected_total") or 0) or now_total == 0:
+            skipped.append({"idx": idx, "reason": "changed_since_plan"})
+            continue
+
+        op_hits, op_sections = 0, []
+        for target in op.get("targets") or []:
+            sec = by_key.get(str(target.get("section_id")))
+            if sec is None:
+                continue
+            content = sec.get("content") or ""
+            if op.get("strategy") == "first":
+                spans = find_spans(content, before, max_hits=1)
+                new_content = content
+                for start, end in reversed(spans):
+                    new_content = new_content[:start] + after + new_content[end:]
+                n = len(spans)
+            else:
+                new_content, n = replace_all_in_text(
+                    content, before, after, max_hits=max_hits)
+                if n < 0:
+                    n = 0
+            if n <= 0:
+                continue
+            sec["content"] = new_content
+            sec["actual_words"] = count_cn_words(new_content)
+            if sec.get("status") != "drafted":
+                sec["status"] = "drafted"
+            label = sec.get("title") or sec.get("id") or "未命名节"
+            if label not in touched:
+                touched.append(label)
+            op_hits += n
+            op_sections.append(label)
+        if op_hits > 0:
+            applied.append({"idx": idx, "sections": op_sections, "hits": op_hits})
+            total_hits += op_hits
+        else:
+            skipped.append({"idx": idx, "reason": "no_replacement"})
+
+    receipt = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "action": "apply_to_paper",
+        "project": project or plan.get("project") or "",
+        "strategy": plan.get("strategy") or "all",
+        "plan_hash": plan.get("plan_hash") or "",
+        "paper_rev_before": rev_before,
+        "paper_rev_after": paper_revision(sections),
+        "applied": applied,
+        "skipped": skipped,
+        "summary": {
+            "total": len((plan.get("ops") or [])),
+            "applied": len(applied),
+            "skipped": len(skipped),
+            "hits": total_hits,
+            "sections": len(touched),
+        },
+    }
+    return {"applied": len(applied), "skipped": len(skipped),
+            "sections": touched, "receipt": receipt}
+
+
+def record_receipt(doc: dict, receipt: dict, cap: int = 20) -> None:
+    """回执写进 doc（保留最近 cap 条），供前端/审计查看"""
+    receipts = doc.setdefault("apply_receipts", [])
+    receipts.append(receipt)
+    if len(receipts) > cap:
+        doc["apply_receipts"] = receipts[-cap:]
+
+
 def extract_upload(data: bytes, filename: str, doc_id: str) -> str:
     """把上传字节落盘后复用 reference_parser.extract_text 提取纯文本"""
     from src.reference_parser import extract_text
@@ -677,6 +1010,9 @@ def rewrite_paragraphs(doc: dict, indexes: List[int],
     返回 {changed: [...], failed: [{idx, reason}], doc}。阻塞调用（放 to_thread）。"""
     from src.local_humanize import rewrite as _rewrite
 
+    doc_id = doc.get("id")
+    append_event(doc_id, "rewrite_start", {
+        "paras": len(indexes), "indexes": list(indexes), "model": "humanize-9b"})
     paras = doc.get("paragraphs") or []
     changed, failed, changes = [], [], []
     for idx in indexes:
@@ -717,6 +1053,9 @@ def rewrite_paragraphs(doc: dict, indexes: List[int],
         "changes": changes,
     })
     save_doc(doc)
+    append_event(doc_id, "rewrite_end", {
+        "changed": changed, "failed": failed,
+        "changed_count": len(changed), "failed_count": len(failed)})
     return {"changed": changed, "failed": failed}
 
 

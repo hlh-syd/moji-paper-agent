@@ -8,6 +8,7 @@
 """
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -92,10 +93,11 @@ class ProjectIndexer:
             except FileNotFoundError:
                 logger.info(f"未找到全局方法注册表 {reg_path}，方法匹配将跳过"
                             "（可在项目目录放 method_registry.yaml 启用）")
-                self._registry = []
+                self._registry = []          # 合法终态：缓存空
             except Exception as e:
-                logger.warning(f"全局方法注册表读取失败（按空表处理）: {e}")
-                self._registry = []
+                # 占用/权限/坏 YAML：不缓存，下次调用重试
+                logger.warning(f"全局方法注册表读取失败（本次按空表处理，下次重试）: {e}")
+                return []
         return self._registry
 
     def _registry_for(self, root: Path) -> List[dict]:
@@ -403,7 +405,9 @@ class ProjectIndexer:
 
     def list_projects(self, root: Optional[str] = None) -> List[dict]:
         """列出工作区根目录下可注册的研究项目目录（含脚本/文档子目录）。
-        排除目录可由 config.yaml 的 workspace.exclude_dirs 配置（默认只排除常见非项目目录）"""
+        排除目录可由 config.yaml 的 workspace.exclude_dirs 配置（默认只排除常见非项目目录）。
+        计数用 os.walk 限深（默认 4 层）：子目录可能极大（rglob 全树曾把事件循环阻塞数分钟），
+        列表场景只需要"有没有代码/文档"的量级信号，不需要精确全树计数。"""
         raw = root if root and str(root).strip() else self.config.system.workspace_root
         if not str(raw).strip():
             return []  # 工作区未设置：等待用户在界面选择根目录
@@ -418,8 +422,7 @@ class ProjectIndexer:
                 continue
             if child.name in exclude:
                 continue
-            py_count = len([p for p in child.rglob("*.py") if not any(x in p.parts for x in SKIP_DIRS)])
-            md_count = len([p for p in child.rglob("*.md") if not any(x in p.parts for x in SKIP_DIRS)])
+            py_count, md_count = self._count_sources(child, exclude)
             if py_count + md_count == 0:
                 continue
             projects.append({
@@ -429,6 +432,28 @@ class ProjectIndexer:
                 "markdown_docs": md_count,
             })
         return projects
+
+    SCAN_MAX_DEPTH = 4          # 相对项目根的最大目录深度
+    SCAN_MAX_FILES = 5000       # 单项目扫描文件数上限（超限即截断计数）
+
+    def _count_sources(self, child: Path, exclude: set) -> tuple:
+        """os.walk 限深统计 *.py / *.md；剪掉 SKIP_DIRS、隐藏目录与 exclude 目录"""
+        py = md = seen = 0
+        root_depth = len(child.parts)
+        for dirpath, dirnames, filenames in os.walk(child):
+            if len(Path(dirpath).parts) - root_depth >= self.SCAN_MAX_DEPTH:
+                dirnames[:] = []   # 到达深度上限：不再下钻
+            dirnames[:] = [d for d in dirnames
+                           if d not in SKIP_DIRS and not d.startswith(".") and d not in exclude]
+            for f in filenames:
+                seen += 1
+                if seen > self.SCAN_MAX_FILES:
+                    return py, md   # 超大目录：计数截断，保证列表接口有界返回
+                if f.endswith(".py"):
+                    py += 1
+                elif f.endswith(".md"):
+                    md += 1
+        return py, md
 
     def file_tree(self, project_path: str, max_depth: int = 4) -> dict:
         """返回项目目录树（供前端左栏文件选择）；显示所有格式的文件"""
