@@ -11,7 +11,7 @@ import { set, setCurrentProject, useStore } from '../store'
 import { Icon } from '../components/Icon'
 import { Sidebar } from '../views/Sidebar'
 import { ChatView } from '../views/ChatView'
-import { FulltextProgress, PaperViewSwitch, PaperWorkspace } from '../views/PaperWorkspace'
+import { FulltextProgress, PaperWorkspace } from '../views/PaperWorkspace'
 
 function DragHandle(props: { left: number; side: 'sidebar' | 'rightbar'; onStart: () => void; onDrag: (dx: number) => void; onEnd: () => void; onReset?: () => void }) {
   const [dragging, setDragging] = useState(false)
@@ -144,12 +144,7 @@ export function AppShell() {
           )}
         </span>
         <span className="grow" />
-        {project && cols.rightbar > 0 && (
-          <>
-            <FulltextProgress />
-            <PaperViewSwitch />
-          </>
-        )}
+        {project && cols.rightbar > 0 && <FulltextProgress />}
       </header>
       <div className="center-col"><ChatView /></div>
       <div className="rightbar-col">{settingsOpen ? null : <PaperWorkspace />}</div>
@@ -157,28 +152,6 @@ export function AppShell() {
       {cols.rightbar > 0 && (
         <DragHandle side="rightbar" left={viewport - cols.rightbar} onStart={onRightbarStart} onDrag={onRightbarDrag} onEnd={onDragEnd} onReset={() => set({ rightbarWidth: null })} />
       )}
-      <div className="status-row"><Statusbar /></div>
-    </div>
-  )
-}
-
-function Statusbar() {
-  const project = useStore(s => s.currentProject)
-  const user = useStore(s => s.user)
-  const fulltext = useStore(s => s.fulltext)
-  return (
-    <div className="statusbar">
-      <span className="sb-brand-mini">墨记</span>
-      <span className="sep">·</span>
-      <span>{project ? `项目：${project}` : '未确定工作区'}</span>
-      {fulltext?.active && (
-        <>
-          <span className="sep">·</span>
-          <span className="ft-chip"><Icon name="play" size={12} />全文 {fulltext.current ?? 0}/{fulltext.total ?? 0}</span>
-        </>
-      )}
-      <span className="grow" />
-      {user?.username && <span className="user-chip">{user.username}{user.role === 'admin' ? ' · 管理员' : ''}</span>}
     </div>
   )
 }

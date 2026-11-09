@@ -666,11 +666,12 @@ def create_app() -> FastAPI:
     # 认证存储初始化：MySQL 建库建表 + 种子账号注入 + Redis 会话层自检。
     # 失败不阻断启动（以 legacy/503 提示），日志给出明确修复指引。
     try:
-        from src import auth_store, project_store
+        from src import auth_store, project_store, state_store
         from src.config import get_config_manager
         auth_store.register_config(get_config_manager().get_config().auth_store)
         auth_store.init_db()
         project_store.init_schema()
+        state_store.init_schema()   # 聊天会话/消息/用户偏好三表（workspace 状态库）
     except Exception as e:
         logging.getLogger(__name__).error(
             f"认证存储初始化失败（MySQL/Redis 不可达？登录将不可用）: {e}")
@@ -694,7 +695,9 @@ def create_app() -> FastAPI:
     system = PaperAgentSystem()
     manager = ConnectionManager()
 
-    # 启动时恢复各用户的会话（对话上下文跨重启；键带 owner 前缀天然隔离）
+    # 启动时恢复各用户的会话（对话上下文跨重启；键带 owner 前缀天然隔离）。
+    # 状态真源是 MySQL 状态库（state_store）；磁盘上的旧 *.state.json 先一次性
+    # 迁移入库（幂等，成功后改名 .migrated 留存），再按库中归属逐用户恢复。
     _legacy_state = scoping.BASE_DIR / "workspace" / "state.json"
     if not list((scoping.BASE_DIR / "workspace").glob("*.state.json")) and _legacy_state.exists():
         try:
@@ -704,13 +707,33 @@ def create_app() -> FastAPI:
         except Exception as _e:
             logger.warning(f"恢复 legacy 会话失败: {_e}")
     for _sf in sorted((scoping.BASE_DIR / "workspace").glob("*.state.json")):
+        if _sf.name == "state.json":
+            continue
+        _owner = _sf.name[:-len(".state.json")]
         try:
-            _owner = "" if _sf.name == "state.json" else _sf.name[:-len(".state.json")]
-            _st = json.loads(_sf.read_text(encoding="utf-8"))
-            scoping.set_request_owner(_owner)
-            _restore_conversations(system, _st.get("sessions", []))
+            workspace_store.migrate_owner_file(_owner)
         except Exception as _e:
-            logger.warning(f"恢复用户会话失败 {_sf.name}: {_e}")
+            logger.warning(f"状态迁移跳过 {_sf.name}: {_e}")
+    try:
+        from src import state_store as _state_store
+        for _owner in _state_store.list_owners():
+            try:
+                scoping.set_request_owner(_owner)
+                _st = workspace_store.load_state() or {}
+                _restore_conversations(system, _st.get("sessions", []))
+            except Exception as _e:
+                logger.warning(f"恢复用户会话失败 {_owner}: {_e}")
+    except Exception as _e:
+        # 状态库不可达（降级模式）：回退从残留的 state 文件逐个恢复
+        logger.warning(f"状态库不可用，回退文件恢复会话: {_e}")
+        for _sf in sorted((scoping.BASE_DIR / "workspace").glob("*.state.json")):
+            try:
+                _owner = "" if _sf.name == "state.json" else _sf.name[:-len(".state.json")]
+                _st = json.loads(_sf.read_text(encoding="utf-8"))
+                scoping.set_request_owner(_owner)
+                _restore_conversations(system, _st.get("sessions", []))
+            except Exception as _e2:
+                logger.warning(f"恢复用户会话失败 {_sf.name}: {_e2}")
     scoping.set_request_owner("")
 
     class LoginRequest(BaseModel):
@@ -750,7 +773,15 @@ def create_app() -> FastAPI:
         state["rev"] = stored_rev + 1
         state["workspace_root"] = stored.get("workspace_root") or state.get("workspace_root") or ""
         sessions = state.get("sessions", [])
-        path = workspace_store.save_state(state)  # 落盘到当前用户的 state 文件
+        path = workspace_store.save_state(state)  # 落盘到当前用户的状态库（MySQL，降级时 state.json）
+        # 当前项目 → last_opened_at（最近使用排序；项目记录不存在则忽略）
+        if state.get("active_project"):
+            try:
+                from src import project_store
+                project_store.touch_project(scoping.current_owner(),
+                                            str(state["active_project"]))
+            except Exception as _e:
+                logger.debug(f"last_opened_at 刷新跳过: {_e}")
         _restore_conversations(system, sessions)
         return {"ok": True, "saved_to": path, "rev": state["rev"]}
 
@@ -1804,18 +1835,35 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/api/sections/self_review")
-    async def self_review(project_name: str):
+    async def self_review(payload: Dict[str, Any] = Body(default=None),
+                          project_name: str = Query(default=None)):
+        """前端发 JSON body {project_name}；兼容旧查询参数形式。"""
+        name = str(((payload or {}).get("project_name")) or project_name or "")
+        if not name:
+            raise HTTPException(status_code=400, detail="缺少 project_name")
         try:
-            profile = system.get_profile(project_name)
-            outline = system.outline_generator.load_outline(project_name)
+            profile = system.get_profile(name)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        try:
+            outline = system.outline_generator.load_outline(name)
             if outline is None:
-                raise HTTPException(status_code=404, detail=f"项目尚无大纲: {project_name}")
+                raise HTTPException(status_code=404, detail=f"项目尚无大纲: {name}")
             report = await system.section_writer.self_review(profile, outline)
             return {"ok": True, "report": report}
         except HTTPException:
             raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/sections/self_review/progress")
+    async def self_review_progress():
+        """自查进度（前端 1.5s 轮询）：逐节真实进度 {active, done, total, title}"""
+        prog = getattr(system.section_writer, "_review_prog", None) or {}
+        return {"active": bool(prog.get("active")),
+                "done": int(prog.get("done") or 0),
+                "total": int(prog.get("total") or 0),
+                "title": str(prog.get("title") or "")}
 
     # ---------- 图片换图 ----------
     @app.get("/api/figures/list")

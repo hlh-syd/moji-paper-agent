@@ -9,7 +9,7 @@ import { applyFontSize, applyTheme, openSettings, set, useStore } from '../store
 import { Icon } from '../components/Icon'
 import { Select } from '../components/Select'
 import { AicPanel, FiguresPanel, KbPanel, ProjectsPanel, ReferencePanel, StylePanel } from './ServicePanels'
-import { FulltextProgress, PaperViewSwitch, PaperWorkspace } from './PaperWorkspace'
+import { FulltextProgress, PaperWorkspace } from './PaperWorkspace'
 
 type Section = 'general' | 'appearance' | 'projects' | 'model' | 'aic' | 'kb' | 'reference' | 'style' | 'figures' | 'about'
 
@@ -18,6 +18,7 @@ export function SettingsPage() {
   const project = useStore(s => s.currentProject)
   const rightbarWidth = useStore(s => s.rightbarWidth)
   const [viewport, setViewport] = useState(() => window.innerWidth)
+  const [closing, setClosing] = useState(false)   // 退场：先播淡出+模糊，动画完再卸载
   useEffect(() => {
     const onResize = () => setViewport(window.innerWidth)
     window.addEventListener('resize', onResize)
@@ -27,10 +28,15 @@ export function SettingsPage() {
   const paperWidth = Math.min(rightbarWidth ?? Math.round(viewport * 0.54), Math.max(0, viewport - 210 - 640))
   const showPaper = !!project && paperWidth >= 360
   const nav = (v: Section) => set({ settingsSection: v })
+  function closePage() {
+    if (closing) return
+    setClosing(true)
+    window.setTimeout(() => set({ settingsOpen: false }), 200)   // 与 pageOut 时长一致
+  }
   return (
-    <div className="settings-page" style={showPaper ? { gridTemplateColumns: `210px minmax(0, 1fr) ${paperWidth}px` } : undefined}>
+    <div className={`settings-page${closing ? ' closing' : ''}`} style={showPaper ? { gridTemplateColumns: `210px minmax(0, 1fr) ${paperWidth}px` } : undefined}>
       <aside className="sp-nav">
-        <button className="sp-back" onClick={() => set({ settingsOpen: false })}><Icon name="arrow-left" />返回工作区</button>
+        <button className="sp-back" onClick={closePage}><Icon name="arrow-left" />返回工作区</button>
         <div className="sp-group">基础</div>
         <button className={`sp-nav-item${section === 'general' ? ' active' : ''}`} onClick={() => nav('general')}><Icon name="settings" />常规</button>
         <button className={`sp-nav-item${section === 'appearance' ? ' active' : ''}`} onClick={() => nav('appearance')}><Icon name="contrast" />外观</button>
@@ -64,7 +70,6 @@ export function SettingsPage() {
             <span className="mtb-project" title={project ?? ''}><Icon name="folder" /><span className="mtb-text">{project}</span></span>
             <span className="grow" />
             <FulltextProgress />
-            <PaperViewSwitch />
           </header>
           <div className="sp-paper-body"><PaperWorkspace /></div>
         </aside>

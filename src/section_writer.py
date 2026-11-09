@@ -1219,7 +1219,8 @@ class SectionWriter:
 
     # ---------- 自查 ----------
     async def self_review(self, profile: dict, outline: dict) -> str:
-        """按自查清单分章审稿并聚合（修复长文 24000 截断漏审问题）"""
+        """按自查清单分章审稿并聚合（修复长文 24000 截断漏审问题）。
+        进度实时写入 _review_prog（GET /api/sections/self_review/progress 轮询展示）。"""
         from langchain_core.messages import HumanMessage
 
         dom = self._dom(profile, outline)
@@ -1229,20 +1230,25 @@ class SectionWriter:
             if addendum:
                 checklist = checklist + "\n\n" + addendum
         llm = self.llm_manager.get_writing_llm()
+        reviewable = [s for s in outline.get("sections", [])
+                      if (s.get("content") or "").strip()]
+        self._review_prog = {"active": True, "done": 0,
+                             "total": len(reviewable), "title": ""}
         report_parts = []
         totals = {"通过": 0, "警告": 0, "不通过": 0}
-        for sec in outline.get("sections", []):
-            content = (sec.get("content") or "").strip()
-            if not content:
-                continue
-            # F 组（写作骨架符合度）：本节槽位的骨架简报动态注入
-            sk_addendum = ""
-            if outline.get("reference_skeleton"):
-                from src.skeleton_extractor import SkeletonExtractor
-                b = SkeletonExtractor.brief_for_section(outline["reference_skeleton"], sec)
-                if b:
-                    sk_addendum = ("\n# 本节写作骨架（F 组检查依据：对照该简报逐项核查）\n" + b)
-            prompt = f"""你是{dom.reviewer}。请只针对下面这一个章节，
+        try:
+            for idx, sec in enumerate(reviewable):
+                self._review_prog["done"] = idx          # 审稿前：已完成 idx 节
+                self._review_prog["title"] = str(sec.get("title") or "")
+                content = (sec.get("content") or "").strip()
+                # F 组（写作骨架符合度）：本节槽位的骨架简报动态注入
+                sk_addendum = ""
+                if outline.get("reference_skeleton"):
+                    from src.skeleton_extractor import SkeletonExtractor
+                    b = SkeletonExtractor.brief_for_section(outline["reference_skeleton"], sec)
+                    if b:
+                        sk_addendum = ("\n# 本节写作骨架（F 组检查依据：对照该简报逐项核查）\n" + b)
+                prompt = f"""你是{dom.reviewer}。请只针对下面这一个章节，
 按清单逐项检查（与该章无关的项可跳过），输出格式按清单末尾的"输出格式"。
 
 # 检查清单
@@ -1252,15 +1258,20 @@ class SectionWriter:
 # 章节：{sec['title']}（目标 {sec.get('target_words')} 字 / 实际 {sec.get('actual_words', 0)} 字）
 
 {content[:24000]}"""
-            resp = await llm.ainvoke([HumanMessage(content=prompt)])
-            text = resp.content if isinstance(resp.content, str) else str(resp.content)
-            report_parts.append(f"### {sec['title']}\n\n{text}")
-            import re as _re
-            m = _re.search(r"(\d+)\s*通过\s*/\s*(\d+)\s*警告\s*/\s*(\d+)\s*不通过", text)
-            if m:
-                totals["通过"] += int(m.group(1))
-                totals["警告"] += int(m.group(2))
-                totals["不通过"] += int(m.group(3))
+                resp = await llm.ainvoke([HumanMessage(content=prompt)])
+                text = resp.content if isinstance(resp.content, str) else str(resp.content)
+                report_parts.append(f"### {sec['title']}\n\n{text}")
+                import re as _re
+                m = _re.search(r"(\d+)\s*通过\s*/\s*(\d+)\s*警告\s*/\s*(\d+)\s*不通过", text)
+                if m:
+                    totals["通过"] += int(m.group(1))
+                    totals["警告"] += int(m.group(2))
+                    totals["不通过"] += int(m.group(3))
+            self._review_prog["done"] = len(reviewable)
+        finally:
+            # 中途异常也必须收口，进度条不能永久悬挂在「进行中」
+            self._review_prog["active"] = False
+            self._review_prog["title"] = ""
         header = (f"# 全文自查汇总\n\n"
                   f"总计：{totals['通过']} 通过 / {totals['警告']} 警告 / {totals['不通过']} 不通过\n\n"
                   f"---\n\n")

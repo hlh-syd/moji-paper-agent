@@ -38,6 +38,8 @@ export interface MojiState {
   toasts: ToastMsg[]
   kb: Record<string, KbCollectionInfo> | null
   wsState: Record<string, unknown>
+  /** 跨组件引用投递：nonce 变化即把 text 追加进对话输入框（自查报告等） */
+  quoteToComposer: { text: string; nonce: number } | null
 }
 
 let state: MojiState = {
@@ -64,6 +66,7 @@ let state: MojiState = {
   toasts: [],
   kb: null,
   wsState: {},
+  quoteToComposer: null,
 }
 
 const listeners = new Set<() => void>()

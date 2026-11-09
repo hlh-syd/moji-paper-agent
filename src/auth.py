@@ -225,6 +225,12 @@ def rename_username(old: str, new: str) -> None:
             project_store._cache_drop(new)
         except Exception:
             pass
+        # 状态库级联：聊天会话/界面偏好归属随新名（否则改名后历史失联）
+        try:
+            from src import state_store
+            state_store.rename_owner(old, new)
+        except Exception as e:
+            logger.warning(f"状态库改名级联跳过: {e}")
         # 旧会话的 payload.sub 还是旧名，全部吊销 → 客户端重新登录
         auth_store.revoke_user_sessions(old)
         logger.info(f"用户改名: {old} → {new}（数据目录与会话已级联）")

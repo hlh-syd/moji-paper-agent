@@ -33,9 +33,33 @@ CREATE TABLE IF NOT EXISTS user_projects (
 """
 
 
+def _ensure_columns() -> None:
+    """老库升级：user_projects 补 domain / status / last_opened_at 三列
+    （幂等，MySQL 无 ADD COLUMN IF NOT EXISTS）"""
+    rows = auth_store._fetch(
+        "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+        "WHERE TABLE_SCHEMA=%s AND TABLE_NAME='user_projects'",
+        (auth_store._conf().mysql_database,))
+    have = {r["COLUMN_NAME"] for r in rows}
+    if "domain" not in have:
+        auth_store._execute("ALTER TABLE user_projects ADD COLUMN domain VARCHAR(32) "
+                            "NOT NULL DEFAULT 'auto' COMMENT '研究领域（auto=未指定）' AFTER path")
+        logger.info("user_projects 表已补列: domain")
+    if "status" not in have:
+        auth_store._execute("ALTER TABLE user_projects ADD COLUMN status "
+                            "ENUM('active','archived') NOT NULL DEFAULT 'active' "
+                            "COMMENT '项目状态' AFTER domain")
+        logger.info("user_projects 表已补列: status")
+    if "last_opened_at" not in have:
+        auth_store._execute("ALTER TABLE user_projects ADD COLUMN last_opened_at "
+                            "DATETIME DEFAULT NULL COMMENT '最近进入时间' AFTER status")
+        logger.info("user_projects 表已补列: last_opened_at")
+
+
 def init_schema() -> None:
-    """幂等建表（随 auth_store.init_db 之后调用）"""
+    """幂等建表 + 老库补列（随 auth_store.init_db 之后调用）"""
     auth_store._execute(SCHEMA_PROJECTS)
+    _ensure_columns()
 
 
 def _cache_get(username: str):
@@ -73,15 +97,28 @@ def list_projects(username: str) -> List[dict]:
     cached = _cache_get(username)
     if cached is not None:
         return cached
+
+    def _iso(v):
+        return v.strftime("%Y-%m-%dT%H:%M:%S") if hasattr(v, "strftime") else str(v or "")
+
     rows = auth_store._fetch(
-        "SELECT name, path, created_at FROM user_projects WHERE username=%s "
-        "ORDER BY created_at, id", (username,))
+        "SELECT name, path, domain, status, created_at, last_opened_at "
+        "FROM user_projects WHERE username=%s ORDER BY created_at, id", (username,))
     items = [{"name": r["name"], "path": r["path"],
-              "created_at": r["created_at"].strftime("%Y-%m-%dT%H:%M:%S")
-              if hasattr(r.get("created_at"), "strftime") else str(r.get("created_at") or "")}
+              "domain": r.get("domain") or "auto",
+              "status": r.get("status") or "active",
+              "created_at": _iso(r.get("created_at")),
+              "last_opened_at": _iso(r.get("last_opened_at"))}
              for r in rows]
     _cache_set(username, items)
     return items
+
+
+def touch_project(username: str, name: str) -> None:
+    """进入项目时刷新 last_opened_at（最近使用排序；记录不存在则忽略）"""
+    auth_store._execute(
+        "UPDATE user_projects SET last_opened_at=NOW() WHERE username=%s AND name=%s",
+        (username, name))
 
 
 def save_project(username: str, name: str, path: str) -> dict:
